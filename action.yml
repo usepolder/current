@@ -1,0 +1,36 @@
+name: 'Current'
+description: 'Component health for design systems: code vs design, on every PR'
+author: 'Polder HQ'
+branding:
+  icon: 'activity'
+  color: 'purple'
+
+inputs:
+  github-token:
+    description: 'GitHub token with pull-requests: write permission'
+    required: true
+    default: ${{ github.token }}
+  working-directory:
+    description: 'Directory containing .current.yml'
+    required: false
+    default: '.'
+  verbose:
+    description: 'Trace every metric resolution into the Action debug log'
+    required: false
+    default: 'false'
+
+outputs:
+  score:
+    description: 'Overall component health score (0-100, one decimal)'
+  code-score:
+    description: 'Code health score'
+  design-score:
+    description: 'Design health score'
+  docs-score:
+    description: 'Documentation health score'
+  changed-files:
+    description: 'Badge and history files written on a push to the default branch'
+
+runs:
+  using: node20
+  main: packages/current-action/dist/index.js

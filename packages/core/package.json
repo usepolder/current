@@ -1,0 +1,44 @@
+{
+  "name": "@usepolder/current-core",
+  "version": "0.1.0",
+  "description": "Scoring engine for Current: component health across code, Figma, and docs.",
+  "license": "Apache-2.0",
+  "author": "Polder HQ",
+  "homepage": "https://github.com/usepolder/current#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/usepolder/current.git",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/usepolder/current/issues"
+  },
+  "keywords": [
+    "design-system",
+    "component-health",
+    "figma",
+    "react",
+    "static-analysis"
+  ],
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "files": [
+    "lib",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p ."
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.24.0",
+    "@babel/types": "^7.24.0",
+    "js-yaml": "^4.1.0"
+  }
+}

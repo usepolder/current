@@ -1,0 +1,14 @@
+version: 1
+figma:
+  file_key: "fixture-file"
+components:
+  Button:
+    code: "src/Button/Button.tsx"
+    figma: "1:10"
+    docs: "docs/button.mdx"
+  Wrapper:
+    code: "src/Wrapper/Wrapper.tsx"
+    figma: "1:20"
+  Ghost:
+    code: "src/Ghost/Ghost.tsx"
+    figma: "1:30"

@@ -1,0 +1,45 @@
+{
+  "name": "@usepolder/current",
+  "version": "0.1.0",
+  "description": "Component health dashboard for design systems: one quadrant, code vs design, runs anywhere, holds nothing.",
+  "license": "Apache-2.0",
+  "author": "Polder HQ",
+  "homepage": "https://github.com/usepolder/current#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/usepolder/current.git",
+    "directory": "packages/current-cli"
+  },
+  "bugs": {
+    "url": "https://github.com/usepolder/current/issues"
+  },
+  "keywords": [
+    "design-system",
+    "component-health",
+    "figma",
+    "audit",
+    "cli"
+  ],
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "bin": {
+    "current": "lib/bin.js"
+  },
+  "files": [
+    "lib",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p ."
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@usepolder/current-core": "^0.1.0"
+  }
+}

@@ -1,0 +1,42 @@
+# Dogfood: run Current on this repo's own fixture design system.
+# PRs get the score comment; pushes to main refresh the badge and history.
+name: Current
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Overlapping pushes to the same branch queue instead of racing the
+# read-modify-write on .current/history.jsonl.
+concurrency:
+  group: current-history-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  current:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # `uses: ./` needs the committed ncc bundle. Until someone has run
+      # `npm run build:action` and committed dist/, skip rather than fail:
+      # a red X on a repo nobody can run yet helps no one.
+      - id: bundle
+        run: |
+          if [ -f packages/current-action/dist/index.js ]; then
+            echo "built=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "built=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Action bundle not committed yet — run 'npm run build:action' and commit packages/current-action/dist to enable the dogfood run."
+          fi
+
+      - if: steps.bundle.outputs.built == 'true'
+        uses: ./
+        with:
+          working-directory: packages/core/tests/fixtures/ds
+        env:
+          CURRENT_FIGMA_TOKEN: ${{ secrets.CURRENT_FIGMA_TOKEN }}

@@ -1,0 +1,47 @@
+# Publishes on a version tag: v1.2.3 -> npm + a GitHub release.
+# The Action bundle is rebuilt and committed here so `uses: usepolder/current@v1`
+# always points at a dist/ that matches the tagged source.
+name: Release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+
+      - name: Build packages and the Action bundle
+        run: npm run build:action
+
+      - name: Fail if the committed Action bundle is stale
+        run: |
+          if ! git diff --quiet -- packages/current-action/dist; then
+            echo "::error::packages/current-action/dist is out of date."
+            echo "Run 'npm run build:action' and commit the result before tagging."
+            git diff --stat -- packages/current-action/dist
+            exit 1
+          fi
+
+      - name: Publish to npm
+        run: npm publish -w @usepolder/current-core -w @usepolder/current --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create the GitHub release
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

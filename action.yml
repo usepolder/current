@@ -32,5 +32,5 @@ outputs:
     description: 'Badge and history files written on a push to the default branch'
 
 runs:
-  using: node20
+  using: node24
   main: packages/current-action/dist/index.js

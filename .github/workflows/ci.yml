@@ -12,8 +12,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      # `npm install`, not `npm ci`: there is no package-lock.json yet.
-      # Commit one (run `npm install` locally) and switch this to `npm ci`.
-      - run: npm install
+      - run: npm ci
       - run: npm test
       - run: npm run typecheck

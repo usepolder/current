@@ -12,5 +12,3 @@ dist/
 !packages/current-action/dist/
 !packages/current-action/dist/**
 
-# Bun lockfile: the project standardises on npm (see CI + release workflows).
-bun.lock

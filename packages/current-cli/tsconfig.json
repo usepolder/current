@@ -3,14 +3,7 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "lib",
-    "declaration": true,
-    "baseUrl": ".",
-    // Point at core's BUILT output, not its source: a path into ../core/src
-    // pulls those files in as compilation inputs and breaks rootDir. The
-    // root build script builds core first, so lib/ is always there.
-    "paths": {
-      "@usepolder/current-core": ["../core/lib/index.d.ts"]
-    }
+    "declaration": true
   },
   "include": ["src/**/*"]
 }

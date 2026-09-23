@@ -2,11 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
-    "noEmit": true,
-    "baseUrl": ".",
-    "paths": {
-      "@usepolder/current-core": ["../core/lib/index.d.ts"]
-    }
+    "outDir": "lib"
   },
   "include": ["src/**/*"]
 }

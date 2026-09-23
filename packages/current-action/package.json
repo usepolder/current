@@ -10,7 +10,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "ncc build src/index.ts -o dist --license licenses.txt"
+    "build": "tsc -p . && ncc build lib/index.js -o dist --license licenses.txt"
   },
   "dependencies": {
     "@actions/core": "^1.10.1",

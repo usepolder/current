@@ -146,6 +146,8 @@ export interface RunIo {
   stderr: (text: string) => void;
   env: NodeJS.ProcessEnv;
   version: string;
+  /** Where the user is standing. Defaults to process.cwd(); injected by tests. */
+  cwd?: string;
 }
 
 export async function run(argv: readonly string[], io: RunIo): Promise<number> {
@@ -215,11 +217,20 @@ export async function run(argv: readonly string[], io: RunIo): Promise<number> {
 
     let reportPath: string | null = null;
     if (!args.noReport && !args.json) {
-      reportPath = path.resolve(dir, args.out ?? DEFAULT_REPORT_FILE);
-      fs.writeFileSync(
-        reportPath,
-        renderReport({ report, history: readHistory(dir) }),
-      );
+      reportPath = resolveReportPath(dir, args.out, io.cwd ?? process.cwd());
+      const html = renderReport({ report, history: readHistory(dir) });
+      try {
+        fs.writeFileSync(reportPath, html);
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        throw new CurrentError(
+          code === 'ENOENT'
+            ? `Cannot write the report to ${reportPath}: that directory does not exist.`
+            : code === 'EACCES'
+              ? `Cannot write the report to ${reportPath}: permission denied.`
+              : `Cannot write the report to ${reportPath}: ${(err as Error).message}`,
+        );
+      }
     }
 
     if (args.json) {
@@ -236,6 +247,21 @@ export async function run(argv: readonly string[], io: RunIo): Promise<number> {
     }
     throw err;
   }
+}
+
+/**
+ * An explicit `--out` is relative to where the user is standing, not to the
+ * directory being scanned — `current ../ds --out report.html` should put the
+ * report next to them, not inside someone else's repo. The default filename
+ * stays in the scanned repo, which is what the README's .gitignore advice
+ * assumes.
+ */
+export function resolveReportPath(
+  scanDir: string,
+  out: string | null,
+  cwd: string,
+): string {
+  return out === null ? path.resolve(scanDir, DEFAULT_REPORT_FILE) : path.resolve(cwd, out);
 }
 
 /**

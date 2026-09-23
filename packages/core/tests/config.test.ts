@@ -52,10 +52,22 @@ describe('parseConfig', () => {
     expect(parseConfig(`version: 1\n${MINIMAL}`).version).toBe(1);
   });
 
-  it('rejects a component mapped to neither code nor figma', () => {
-    expect(() => parseConfig('components:\n  Ghost:\n    docs: "d.md"\n')).toThrow(
-      ConfigValidationError,
-    );
+  it('allows a component with no mappings, scored purely from manual answers', () => {
+    // The on-ramp for a team digitising an existing audit: components first,
+    // code and Figma wiring later.
+    const config = parseConfig('components:\n  Accordion: {}\n  Badge: {}\n');
+    expect(config.components).toHaveLength(2);
+    expect(config.components[0]).toMatchObject({
+      name: 'Accordion',
+      code: null,
+      figma: null,
+      docs: null,
+    });
+  });
+
+  it('allows a docs-only component', () => {
+    const config = parseConfig('components:\n  Ghost:\n    docs: "d.md"\n');
+    expect(config.components[0]).toMatchObject({ docs: 'd.md', code: null, figma: null });
   });
 
   it('rejects an unknown metric id in metrics.disable', () => {

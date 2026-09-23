@@ -14,6 +14,17 @@ export interface RenderOptions {
 
 const PLOT = { size: 560, pad: 48 } as const;
 
+// The plot area covers a little more than 0-100 so a component sitting at
+// exactly 100% draws as a whole dot inside the frame rather than half over
+// the edge. The mapping stays linear and the axis ticks keep their true
+// positions — this is breathing room, not a rescale.
+//
+// The top is deliberately roomier than the bottom: that band is where the
+// quadrant names sit, and a mature design system clusters hard against 100%
+// on the design axis, so anything less leaves "Healthy" printed under a pile
+// of dots.
+const DOMAIN = { min: -4, max: 110 } as const;
+
 export function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -61,23 +72,27 @@ function quadrantSvg(report: CurrentReport): string {
   const { size, pad } = PLOT;
   const w = size + pad * 2;
   const h = size + pad * 2;
-  const x = (score: number): number => pad + (score / 100) * size;
-  const y = (score: number): number => pad + size - (score / 100) * size;
+  const span = DOMAIN.max - DOMAIN.min;
+  const x = (score: number): number => pad + ((score - DOMAIN.min) / span) * size;
+  const y = (score: number): number => pad + size - ((score - DOMAIN.min) / span) * size;
   const tx = x(report.threshold);
   const ty = y(report.threshold);
 
+  // Labels sit in the outer corners, in the margin the padded domain creates
+  // above 100% and below 0%, so a dense cluster of top-scoring components
+  // never sits on top of them.
   const zones = [
-    { x: pad, y: pad, w: tx - pad, h: ty - pad, cls: 'critical', label: QUADRANT_LABELS.critical },
-    { x: tx, y: pad, w: pad + size - tx, h: ty - pad, cls: 'healthy', label: QUADRANT_LABELS.healthy },
-    { x: pad, y: ty, w: tx - pad, h: pad + size - ty, cls: 'monitor', label: QUADRANT_LABELS.monitor },
-    { x: tx, y: ty, w: pad + size - tx, h: pad + size - ty, cls: 'moderate', label: QUADRANT_LABELS.moderate },
+    { x: pad, y: pad, w: tx - pad, h: ty - pad, cls: 'critical', label: QUADRANT_LABELS.critical, lx: pad + 14, ly: pad + 17, anchor: 'start' },
+    { x: tx, y: pad, w: pad + size - tx, h: ty - pad, cls: 'healthy', label: QUADRANT_LABELS.healthy, lx: pad + size - 14, ly: pad + 17, anchor: 'end' },
+    { x: pad, y: ty, w: tx - pad, h: pad + size - ty, cls: 'monitor', label: QUADRANT_LABELS.monitor, lx: pad + 14, ly: pad + size - 10, anchor: 'start' },
+    { x: tx, y: ty, w: pad + size - tx, h: pad + size - ty, cls: 'moderate', label: QUADRANT_LABELS.moderate, lx: pad + size - 14, ly: pad + size - 10, anchor: 'end' },
   ];
 
   const zoneSvg = zones
     .map(
       (z) =>
         `<rect class="zone zone-${z.cls}" x="${z.x}" y="${z.y}" width="${z.w}" height="${z.h}" rx="6" />` +
-        `<text class="zone-label zone-label-${z.cls}" x="${z.x + z.w / 2}" y="${z.y + 22}" text-anchor="middle">${escapeHtml(
+        `<text class="zone-label zone-label-${z.cls}" x="${z.lx}" y="${z.ly}" text-anchor="${z.anchor}">${escapeHtml(
           z.label,
         )}</text>`,
     )
@@ -116,8 +131,8 @@ function quadrantSvg(report: CurrentReport): string {
   const ticks = [0, 20, 40, 60, 80, 100]
     .map(
       (v) =>
-        `<text class="tick" x="${x(v)}" y="${h - pad + 20}" text-anchor="middle">${v}</text>` +
-        `<text class="tick" x="${pad - 12}" y="${y(v) + 4}" text-anchor="end">${v}</text>`,
+        `<text class="tick" x="${x(v).toFixed(1)}" y="${h - pad + 20}" text-anchor="middle">${v}</text>` +
+        `<text class="tick" x="${pad - 12}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${v}</text>`,
     )
     .join('\n      ');
 
@@ -214,9 +229,25 @@ function trendSvg(history: readonly HistoryEntry[]): string {
     </section>`;
 }
 
+/**
+ * Which sides are worth badging as "unmapped". Unmapped is only news when
+ * some components DO map that side — then it marks an outlier. When nothing
+ * in the report maps it, that is the report's mode, not a per-row fact, and
+ * badging all 31 rows is noise. `missing` and `unavailable` always badge:
+ * those mean something is broken, not merely unconfigured.
+ */
+function sidesWorthBadging(components: readonly ComponentResult[]): Set<string> {
+  const worth = new Set<string>();
+  for (const side of ['code', 'figma', 'docs'] as const) {
+    if (components.some((c) => c.presence[side] === 'present')) worth.add(side);
+  }
+  return worth;
+}
+
 /** Name the side, not just the state: two bare "missing" badges tell you nothing. */
-function presenceBadge(side: string, state: string): string {
+function presenceBadge(side: string, state: string, badgeUnmapped: Set<string>): string {
   if (state === 'present') return '';
+  if (state === 'unmapped' && !badgeUnmapped.has(side)) return '';
   return `<span class="badge badge-${escapeHtml(state)}">${escapeHtml(side)} ${escapeHtml(
     state,
   )}</span>`;
@@ -231,6 +262,7 @@ function scoreCell(axis: { score: number | null; degraded: boolean }): string {
 }
 
 function componentRows(report: CurrentReport): string {
+  const badgeUnmapped = sidesWorthBadging(report.components);
   return report.components
     .map((c) => {
       const low = c.scores.code.lowConfidence || c.scores.design.lowConfidence;
@@ -252,10 +284,11 @@ function componentRows(report: CurrentReport): string {
               <button class="disclose" aria-expanded="false" aria-controls="detail-${escapeHtml(c.name)}">
                 <span class="chevron" aria-hidden="true">▸</span>${escapeHtml(c.name)}
               </button>
-              ${presenceBadge('code', c.presence.code)}${presenceBadge(
+              ${presenceBadge('code', c.presence.code, badgeUnmapped)}${presenceBadge(
                 'figma',
                 c.presence.figma,
-              )}${presenceBadge('docs', c.presence.docs)}
+                badgeUnmapped,
+              )}${presenceBadge('docs', c.presence.docs, badgeUnmapped)}
               ${low ? '<span class="badge badge-low">low confidence</span>' : ''}
             </td>
             <td class="num" data-sort="${c.scores.code.score ?? -1}">${scoreCell(c.scores.code)}</td>

@@ -94,6 +94,36 @@ describe('renderReport', () => {
     expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
   });
 
+  it('does not badge "unmapped" when nothing in the report maps that side', async () => {
+    // A pure manual audit maps nothing. Badging every row three times over
+    // is noise, not signal.
+    const report = await fixtureReport();
+    for (const c of report.components) {
+      c.presence = { code: 'unmapped', figma: 'unmapped', docs: 'unmapped' };
+    }
+    const html = renderReport({ report });
+    expect(html).not.toContain('code unmapped');
+    expect(html).not.toContain('figma unmapped');
+  });
+
+  it('badges "unmapped" when it marks an outlier against mapped siblings', async () => {
+    const report = await fixtureReport();
+    report.components[0].presence = { code: 'present', figma: 'present', docs: 'present' };
+    report.components[1].presence = { code: 'unmapped', figma: 'present', docs: 'present' };
+    const html = renderReport({ report });
+    expect(html).toContain('code unmapped');
+  });
+
+  it('always badges a broken side, mapped-but-missing or unavailable', async () => {
+    const report = await fixtureReport();
+    for (const c of report.components) {
+      c.presence = { code: 'missing', figma: 'unavailable', docs: 'unmapped' };
+    }
+    const html = renderReport({ report });
+    expect(html).toContain('code missing');
+    expect(html).toContain('figma unavailable');
+  });
+
   it('lists components that could not be plotted', async () => {
     const report = await fixtureReport();
     const html = renderReport({ report });

@@ -34415,17 +34415,17 @@ function parseComponents(raw) {
         if (!isPlainObject(value)) {
             throw new errors_1.ConfigValidationError(`components.${name} must be an object with code / figma / docs keys`);
         }
-        const mapping = {
+        // A component with no mappings at all is legal: it is scored purely from
+        // manual answers. That is how a team starts — the audit spreadsheet they
+        // already keep, lifted into a file, before any automation is wired up.
+        // If it has no answers either, it simply scores null and lands in the
+        // report's "not enough data" list, which says so plainly.
+        out.push({
             name,
             code: readOptionalString(value.code, name, 'code'),
             figma: readOptionalString(value.figma, name, 'figma'),
             docs: readOptionalString(value.docs, name, 'docs'),
-        };
-        if (mapping.code === null && mapping.figma === null) {
-            throw new errors_1.ConfigValidationError(`components.${name} needs at least one of \`code:\` or \`figma:\` — ` +
-                'a component mapped to neither can never be scored.');
-        }
-        out.push(mapping);
+        });
     }
     return out;
 }

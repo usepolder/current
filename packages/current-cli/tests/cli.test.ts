@@ -27,7 +27,11 @@ interface Captured {
   err: string;
 }
 
-async function invoke(argv: string[], env: NodeJS.ProcessEnv = {}): Promise<Captured> {
+async function invoke(
+  argv: string[],
+  env: NodeJS.ProcessEnv = {},
+  cwd?: string,
+): Promise<Captured> {
   let out = '';
   let err = '';
   const code = await run(argv, {
@@ -39,6 +43,7 @@ async function invoke(argv: string[], env: NodeJS.ProcessEnv = {}): Promise<Capt
     },
     env,
     version: '0.1.0-test',
+    cwd,
   });
   return { code, out, err };
 }
@@ -117,10 +122,37 @@ describe('run', () => {
     expect(html).toContain('Button');
   });
 
-  it('honours --out', async () => {
+  it('resolves --out against the cwd, not the scanned directory', async () => {
+    // `current ../ds --out report.html` should land next to the user, not
+    // inside the repo being scanned.
     const dir = tempCopyOfFixture();
-    await invoke([dir, '--out', 'health.html']);
-    expect(fs.existsSync(path.join(dir, 'health.html'))).toBe(true);
+    const here = fs.mkdtempSync(path.join(os.tmpdir(), 'current-cwd-'));
+    temps.push(here);
+
+    const { code } = await invoke([dir, '--out', 'health.html'], {}, here);
+
+    expect(code).toBe(0);
+    expect(fs.existsSync(path.join(here, 'health.html'))).toBe(true);
+    expect(fs.existsSync(path.join(dir, 'health.html'))).toBe(false);
+  });
+
+  it('writes the default report into the scanned directory', async () => {
+    const dir = tempCopyOfFixture();
+    const here = fs.mkdtempSync(path.join(os.tmpdir(), 'current-cwd-'));
+    temps.push(here);
+
+    await invoke([dir], {}, here);
+
+    expect(fs.existsSync(path.join(dir, 'current-report.html'))).toBe(true);
+    expect(fs.existsSync(path.join(here, 'current-report.html'))).toBe(false);
+  });
+
+  it('reports an unwritable report path cleanly instead of crashing', async () => {
+    const dir = tempCopyOfFixture();
+    const { code, err } = await invoke([dir, '--out', 'no/such/dir/report.html']);
+    expect(code).toBe(2);
+    expect(err).toContain('that directory does not exist');
+    expect(err).not.toContain('    at ');
   });
 
   it('writes no report with --no-report', async () => {

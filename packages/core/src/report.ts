@@ -17,12 +17,28 @@ export interface MetricResult {
   evidence: string | null;
 }
 
+/**
+ * Why a side of a component did or did not resolve.
+ *
+ * `unavailable` and `not-checked` both mean "we did not read Figma", but only
+ * the first one cost a score. When every design metric is answered by a
+ * human, the node is never fetched because nothing needed it — that is a
+ * non-event, not a failure, and flagging it as one puts a red badge on every
+ * row of a perfectly good report.
+ */
+export type SidePresence =
+  | 'present'
+  | 'missing'
+  | 'unmapped'
+  | 'unavailable'
+  | 'not-checked';
+
 export interface ComponentResult {
   name: string;
   /** Which sides resolved. A missing side is reported, never silently dropped. */
   presence: {
     code: 'present' | 'missing' | 'unmapped';
-    figma: 'present' | 'missing' | 'unmapped' | 'unavailable';
+    figma: SidePresence;
     docs: 'present' | 'missing' | 'unmapped';
   };
   scores: Record<MetricCategory, AxisScore>;

@@ -174,6 +174,33 @@ describe('scanRepo — end to end against a fixture design system', () => {
     expect(de2).toMatchObject({ answer: 'Yes', source: 'manual' });
   });
 
+  it('still scores the design axis when Figma is down but no design metric needed it', async () => {
+    // A team running the whole audit by hand has answers for every design
+    // metric. Figma being unreachable cost them nothing, so withholding the
+    // score would punish them for an irrelevant network failure.
+    const config = parseConfig(`
+components:
+  Button:
+    figma: "1:10"
+metrics:
+  manual: [DE1, DE2, DE3, DE4, DE5, DE6, DE7, DE8, DE9, DE10, DE11]
+`);
+    const answers = parseAnswers('Button:\n  DE1: Yes\n  DE3: Yes\n  DE7: No\n');
+
+    const report = await scanRepo({
+      repoRoot: FIXTURE,
+      config,
+      answers,
+      figma: fixtureFigma({ fail: 500 }),
+    });
+
+    const design = report.components[0].scores.design;
+    expect(design.degraded).toBe(false);
+    expect(design.score).toBe(66.7);
+    // And no warning banner, because nothing was actually lost.
+    expect(report.figmaUnavailable).toBeNull();
+  });
+
   it('keeps the code axis fully scored on a degraded run', async () => {
     const report = await scanFixture({ figma: fixtureFigma({ fail: 403 }) });
     expect(byName(report, 'Button').scores.code.degraded).toBe(false);

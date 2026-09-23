@@ -239,7 +239,10 @@ function trendSvg(history: readonly HistoryEntry[]): string {
 function sidesWorthBadging(components: readonly ComponentResult[]): Set<string> {
   const worth = new Set<string>();
   for (const side of ['code', 'figma', 'docs'] as const) {
-    if (components.some((c) => c.presence[side] === 'present')) worth.add(side);
+    // "Mapped at all" is the test, not "resolved". A component absent from a
+    // library everyone else is mapped into is exactly the outlier worth
+    // pointing at, whether or not the file was read this run.
+    if (components.some((c) => c.presence[side] !== 'unmapped')) worth.add(side);
   }
   return worth;
 }
@@ -247,6 +250,8 @@ function sidesWorthBadging(components: readonly ComponentResult[]): Set<string> 
 /** Name the side, not just the state: two bare "missing" badges tell you nothing. */
 function presenceBadge(side: string, state: string, badgeUnmapped: Set<string>): string {
   if (state === 'present') return '';
+  // Nothing needed this side, so nothing went wrong with it.
+  if (state === 'not-checked') return '';
   if (state === 'unmapped' && !badgeUnmapped.has(side)) return '';
   return `<span class="badge badge-${escapeHtml(state)}">${escapeHtml(side)} ${escapeHtml(
     state,

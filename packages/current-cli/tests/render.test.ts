@@ -114,6 +114,27 @@ describe('renderReport', () => {
     expect(html).toContain('code unmapped');
   });
 
+  it('never badges a side that simply was not needed this run', async () => {
+    // Mapped to Figma, no token, but every design metric answered by hand:
+    // the node was never fetched because nothing wanted it. That is not a
+    // fault, and badging 31 rows for it buries the rows that are at fault.
+    const report = await fixtureReport();
+    for (const c of report.components) {
+      c.presence = { code: 'unmapped', figma: 'not-checked', docs: 'unmapped' };
+    }
+    const html = renderReport({ report });
+    expect(html).not.toContain('figma not-checked');
+    expect(html).not.toContain('badge-not-checked');
+  });
+
+  it('badges the component absent from a library its siblings are mapped into', async () => {
+    const report = await fixtureReport();
+    report.components[0].presence = { code: 'unmapped', figma: 'not-checked', docs: 'unmapped' };
+    report.components[1].presence = { code: 'unmapped', figma: 'unmapped', docs: 'unmapped' };
+    const html = renderReport({ report });
+    expect(html).toContain('figma unmapped');
+  });
+
   it('always badges a broken side, mapped-but-missing or unavailable', async () => {
     const report = await fixtureReport();
     for (const c of report.components) {

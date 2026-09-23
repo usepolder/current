@@ -20,6 +20,13 @@ import {
 } from './report';
 import { averageScore, quadrantFor, scoreAnswers, type AxisScore } from './score';
 
+/**
+ * Evidence marker for a design check that could not run because Figma was
+ * unreachable. Matched exactly when deciding whether the design axis is
+ * degraded, so the two stay in step.
+ */
+const FIGMA_UNAVAILABLE = 'Figma unavailable — design metrics not evaluated';
+
 export interface ScanOptions {
   repoRoot: string;
   config: CurrentConfig;
@@ -118,6 +125,17 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
     }),
   );
 
+  // Figma being unreachable is only worth warning about if it actually cost
+  // a score. When every design metric was answered by a human, it did not,
+  // and a banner saying "design metrics were not evaluated" above a design
+  // column full of numbers is just wrong.
+  if (figmaUnavailable !== null && !components.some((c) => c.scores.design.degraded)) {
+    logger.trace(
+      'figma: unavailable, but no design metric needed it — not reported as a degraded run',
+    );
+    figmaUnavailable = null;
+  }
+
   const totals = {
     code: averageScore(components.map((c) => c.scores.code.score)),
     design: averageScore(components.map((c) => c.scores.design.score)),
@@ -213,10 +231,17 @@ function scoreComponent(
     logger.trace(`${c.name}/${metric.id}: ${outcome.answer} (${metric.check}) — ${outcome.evidence}`);
   }
 
-  // The design axis is degraded when Figma was mapped for this component but
-  // could not be read: its automated metrics never ran.
-  const designDegraded =
-    ctx.figmaMapped && ctx.figmaUnavailable && designFacts === null;
+  // The design axis is degraded only when Figma being unreachable actually
+  // cost us something — that is, some design metric was waiting on an
+  // automated check that never ran.
+  //
+  // If every design metric is answered by a human (or configured manual),
+  // Figma being down changes nothing about the score, and withholding it
+  // would punish a team for a network failure that had no bearing on their
+  // answers. That is the whole-audit-in-a-file case, and it must still score.
+  const designDegraded = results.some(
+    (r) => r.category === 'design' && r.source === 'auto' && r.evidence === FIGMA_UNAVAILABLE,
+  );
 
   const scores = {} as Record<MetricCategory, AxisScore>;
   for (const category of CATEGORIES) {
@@ -238,7 +263,10 @@ function scoreComponent(
       figma: !ctx.figmaMapped
         ? 'unmapped'
         : ctx.figmaUnavailable
-          ? 'unavailable'
+          ? // Only a failure if a design check was actually waiting on it.
+            designDegraded
+            ? 'unavailable'
+            : 'not-checked'
           : c.figmaNode === null
             ? 'missing'
             : 'present',
@@ -281,7 +309,7 @@ function runCheck(
         return { answer: 'N/A', evidence: 'no Figma node mapped for this component' };
       }
       if (args.ctx.figmaUnavailable) {
-        return { answer: 'N/A', evidence: 'Figma unavailable — design metrics not evaluated' };
+        return { answer: 'N/A', evidence: FIGMA_UNAVAILABLE };
       }
       return { answer: 'No', evidence: 'Figma node mapped but not found in the file' };
     }

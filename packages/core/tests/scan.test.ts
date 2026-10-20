@@ -5,6 +5,7 @@ import {
   FigmaClient,
   NoComponentsError,
   PathTraversalError,
+  fixFirst,
   parseAnswers,
   parseConfig,
   scanRepo,
@@ -14,6 +15,16 @@ import {
 import { fixtureNodes } from './fixtures/figma-nodes';
 
 const FIXTURE = path.join(__dirname, 'fixtures', 'ds');
+
+/** Wrap a Current config body in the `current:` block of a shared .polder.yml. */
+function polder(body: string): string {
+  const indented = body
+    .split('\n')
+    .map((l) => (l.trim() === '' ? l : `  ${l}`))
+    .join('\n');
+  return `current:\n${indented}\n`;
+}
+
 
 function fixtureFigma(opts: { fail?: number } = {}): FigmaClient {
   return new FigmaClient({
@@ -44,14 +55,17 @@ function fixtureFigma(opts: { fail?: number } = {}): FigmaClient {
   });
 }
 
-async function scanFixture(overrides: { figma?: FigmaClient | null } = {}): Promise<CurrentReport> {
-  const config = parseConfig(fs.readFileSync(path.join(FIXTURE, '.current.yml'), 'utf8'));
+async function scanFixture(
+  overrides: { figma?: FigmaClient | null; usage?: Record<string, number> } = {},
+): Promise<CurrentReport> {
+  const config = parseConfig(fs.readFileSync(path.join(FIXTURE, '.polder.yml'), 'utf8'));
   const answers = parseAnswers(fs.readFileSync(path.join(FIXTURE, '.current.answers.yml'), 'utf8'));
   return scanRepo({
     repoRoot: FIXTURE,
     config,
     answers,
     figma: overrides.figma === undefined ? fixtureFigma() : overrides.figma,
+    usage: overrides.usage === undefined ? null : new Map(Object.entries(overrides.usage)),
     now: () => new Date('2026-01-01T00:00:00.000Z'),
   });
 }
@@ -178,13 +192,13 @@ describe('scanRepo — end to end against a fixture design system', () => {
     // A team running the whole audit by hand has answers for every design
     // metric. Figma being unreachable cost them nothing, so withholding the
     // score would punish them for an irrelevant network failure.
-    const config = parseConfig(`
+    const config = parseConfig(polder(`
 components:
   Button:
     figma: "1:10"
 metrics:
   manual: [DE1, DE2, DE3, DE4, DE5, DE6, DE7, DE8, DE9, DE10, DE11]
-`);
+`));
     const answers = parseAnswers('Button:\n  DE1: Yes\n  DE3: Yes\n  DE7: No\n');
 
     const report = await scanRepo({
@@ -216,7 +230,7 @@ metrics:
     await expect(
       scanRepo({
         repoRoot: FIXTURE,
-        config: { ...parseConfig('components:\n  A:\n    code: "a.tsx"\n'), components: [] },
+        config: { ...parseConfig(polder('components:\n  A:\n    code: "a.tsx"\n')), components: [] },
         answers: new Map(),
       }),
     ).rejects.toBeInstanceOf(NoComponentsError);
@@ -226,13 +240,123 @@ metrics:
     await expect(
       scanRepo({
         repoRoot: FIXTURE,
-        config: parseConfig('components:\n  Evil:\n    code: "../../../../etc/passwd"\n'),
+        config: parseConfig(polder('components:\n  Evil:\n    code: "../../../../etc/passwd"\n')),
         answers: new Map(),
       }),
     ).rejects.toBeInstanceOf(PathTraversalError);
   });
 });
 
+describe('scanRepo — usage-weighted priority', () => {
+  it('carries no usage and no priority when none was supplied', async () => {
+    const report = await scanFixture();
+    expect(report.usage).toBeNull();
+    for (const c of report.components) {
+      expect(c.usage).toBeNull();
+      expect(c.priority).toBeNull();
+    }
+  });
+
+  it('ranks the same weakness higher when the component is used more', async () => {
+    // Wrapper (weak) is used far more than Ghost (also weak).
+    const report = await scanFixture({ usage: { Button: 400, Wrapper: 200, Ghost: 2 } });
+    const wrapper = byName(report, 'Wrapper');
+    const ghost = byName(report, 'Ghost');
+    expect(wrapper.usage).toBe(200);
+    expect(wrapper.priority!).toBeGreaterThan(ghost.priority!);
+    expect(fixFirst(report).map((e) => e.name)).toEqual(['Wrapper', 'Ghost']);
+  });
+
+  it('does not list a healthy component however much it is used', async () => {
+    const report = await scanFixture({ usage: { Button: 9999, Wrapper: 1, Ghost: 1 } });
+    expect(fixFirst(report).map((e) => e.name)).not.toContain('Button');
+  });
+
+  it('treats a mapped component Reach never saw as used zero times, not unknown', async () => {
+    const report = await scanFixture({ usage: { Button: 10 } });
+    const wrapper = byName(report, 'Wrapper');
+    expect(wrapper.usage).toBe(0);
+    expect(wrapper.priority).toBe(0);
+    expect(fixFirst(report)).toEqual([]);
+  });
+
+  it('reports usage that no mapped component accounts for', async () => {
+    const report = await scanFixture({ usage: { Button: 10, Wrapper: 5, Divider: 30, Icon: 3 } });
+    expect(report.usage).toEqual({
+      totalUses: 48,
+      unmatched: [
+        { name: 'Divider', uses: 30 },
+        { name: 'Icon', uses: 3 },
+      ],
+    });
+  });
+
+  it('leaves the scores and quadrants exactly as they were', async () => {
+    const without = await scanFixture();
+    const withUsage = await scanFixture({ usage: { Button: 400, Wrapper: 200, Ghost: 2 } });
+    expect(withUsage.totals).toEqual(without.totals);
+    expect(withUsage.quadrantCounts).toEqual(without.quadrantCounts);
+    expect(withUsage.components.map((c) => [c.scores, c.quadrant])).toEqual(
+      without.components.map((c) => [c.scores, c.quadrant]),
+    );
+  });
+});
+
 function report_has(component: ComponentResult, needle: string): boolean {
   return component.metrics.some((m) => (m.evidence ?? '').includes(needle));
 }
+
+describe('scanRepo — an organisation’s own norms', () => {
+  async function scanWith(metricsYaml: string, answersYaml = ''): Promise<CurrentReport> {
+    const base = fs.readFileSync(path.join(FIXTURE, '.polder.yml'), 'utf8');
+    const config = parseConfig(`${base}  metrics:\n${metricsYaml}`);
+    return scanRepo({
+      repoRoot: FIXTURE,
+      config,
+      answers: parseAnswers(answersYaml),
+      figma: fixtureFigma(),
+      now: () => new Date('2026-01-01T00:00:00.000Z'),
+    });
+  }
+  const metric = (r: CurrentReport, component: string, id: string) =>
+    byName(r, component).metrics.find((m) => m.metricId === id);
+
+  it('runs an automated custom norm and records its evidence', async () => {
+    const report = await scanWith(
+      '    custom:\n' +
+        '      - id: ORG1\n        category: code\n        guideline: Sets aria-disabled\n' +
+        '        check: code.contains\n        params: { text: ["aria-disabled"] }\n',
+    );
+    const btn = metric(report, 'Button', 'ORG1')!;
+    expect(btn).toMatchObject({ answer: 'Yes', source: 'auto', guideline: 'Sets aria-disabled' });
+    expect(btn.evidence).toContain('aria-disabled');
+    expect(metric(report, 'Wrapper', 'ORG1')?.answer).toBe('No');
+  });
+
+  it('feeds a custom norm into its category’s score', async () => {
+    const before = await scanWith('    disable: []\n');
+    const after = await scanWith(
+      '    custom:\n      - id: ORG1\n        category: code\n        guideline: g\n' +
+        '        check: code.contains\n        params: { text: ["nothing-like-this"] }\n',
+    );
+    expect(byName(after, 'Button').scores.code.no).toBe(byName(before, 'Button').scores.code.no + 1);
+    expect(byName(after, 'Button').scores.design).toEqual(byName(before, 'Button').scores.design);
+  });
+
+  it('takes a manual custom norm’s answers from the answers file, and leaves the rest unanswered', async () => {
+    const report = await scanWith(
+      '    custom:\n      - { id: ORG9, category: design, guideline: Dark mode variant exists }\n',
+      'Button:\n  ORG9: Yes\n',
+    );
+    expect(metric(report, 'Button', 'ORG9')).toMatchObject({ answer: 'Yes', source: 'manual' });
+    expect(metric(report, 'Wrapper', 'ORG9')).toMatchObject({ answer: 'N/A', source: 'unanswered' });
+  });
+
+  it('applies an overridden heading list to the docs check', async () => {
+    const report = await scanWith(
+      '    override:\n      DO2:\n        params: { headings: ["best practices"] }\n',
+    );
+    // button.mdx has "Usage" but not "Best practices".
+    expect(metric(report, 'Button', 'DO2')?.answer).toBe('No');
+  });
+});

@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   DESIGN_CHECKS,
   checkDocSection,
-  extractHeadings,
+  extractHtmlHeadings,
   figmaPropertyNames,
+  headingMatches,
+  isDocsUrl,
+  type DocsFacts,
   type FigmaNode,
 } from '@usepolder/current-core';
 
@@ -179,61 +182,116 @@ describe('figmaPropertyNames', () => {
 });
 
 describe('docs.section', () => {
-  it('extracts markdown headings and JSX title props', () => {
-    const headings = extractHeadings('# Button\n\n## Usage\n\n<Section title="Accessibility" />');
-    expect(headings).toEqual(['Button', 'Usage', 'Accessibility']);
+  const facts = (over: Partial<DocsFacts> = {}): DocsFacts => ({
+    componentName: 'Button',
+    headings: ['Overview', 'Usage', 'States'],
+    absence: null,
+    wanted: ['usage'],
+    ...over,
   });
 
   it('answers Yes on a matching heading', () => {
-    const r = checkDocSection({
-      componentName: 'Button',
-      source: '## Usage\ntext',
-      missing: false,
-      headings: ['usage'],
-    });
+    const r = checkDocSection(facts());
     expect(r.answer).toBe('Yes');
     expect(r.evidence).toContain('Usage');
   });
 
   it('matches a synonym', () => {
-    const r = checkDocSection({
-      componentName: 'Button',
-      source: '## When to use\ntext',
-      missing: false,
-      headings: ['usage', 'when to use'],
-    });
+    const r = checkDocSection(
+      facts({ headings: ['When to use'], wanted: ['usage', 'when to use'] }),
+    );
     expect(r.answer).toBe('Yes');
   });
 
   it('answers No and lists what it did find', () => {
-    const r = checkDocSection({
-      componentName: 'Button',
-      source: '## Anatomy\ntext',
-      missing: false,
-      headings: ['animation'],
-    });
+    const r = checkDocSection(facts({ headings: ['Anatomy'], wanted: ['animation'] }));
     expect(r.answer).toBe('No');
     expect(r.evidence).toContain('Anatomy');
   });
 
-  it('answers N/A when no docs file is mapped', () => {
-    const r = checkDocSection({
-      componentName: 'Button',
-      source: null,
-      missing: false,
-      headings: ['usage'],
-    });
+  it('answers No when the doc has no headings at all', () => {
+    const r = checkDocSection(facts({ headings: [] }));
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('no headings');
+  });
+
+  it('answers N/A when no docs are mapped', () => {
+    const r = checkDocSection(facts({ headings: null, absence: 'unmapped' }));
     expect(r.answer).toBe('N/A');
   });
 
-  it('answers No when a docs file is mapped but missing on disk', () => {
-    const r = checkDocSection({
-      componentName: 'Button',
-      source: null,
-      missing: true,
-      headings: ['usage'],
-    });
+  it('answers No when docs are mapped but missing on disk', () => {
+    const r = checkDocSection(facts({ headings: null, absence: 'missing' }));
     expect(r.answer).toBe('No');
     expect(r.evidence).toContain('missing on disk');
+  });
+
+  it('answers N/A, not No, when a hosted page has no renderer', () => {
+    // "We could not look" is not "we looked and it is undocumented".
+    const r = checkDocSection(facts({ headings: null, absence: 'no-renderer' }));
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('playwright');
+  });
+
+  it('answers N/A, not No, when a hosted page could not be read', () => {
+    const r = checkDocSection(
+      facts({ headings: null, absence: 'unreadable', absenceDetail: 'timeout after 20000ms' }),
+    );
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('timeout');
+  });
+});
+
+describe('headingMatches', () => {
+  it('matches a heading that is exactly the synonym', () => {
+    expect(headingMatches('Usage', 'usage')).toBe(true);
+  });
+
+  it('matches a heading that starts with the synonym', () => {
+    expect(headingMatches('Usage guidelines', 'usage')).toBe(true);
+    expect(headingMatches('Content & tone', 'content')).toBe(true);
+  });
+
+  it('does not match a synonym buried mid-heading', () => {
+    // Button documents "Icon Usage", which is guidance about icons, not the
+    // component's usage guidelines. Substring matching scored that as a pass.
+    expect(headingMatches('Icon Usage', 'usage')).toBe(false);
+  });
+
+  it('does not match a longer word that merely starts the same', () => {
+    expect(headingMatches('Stateful behaviour', 'state')).toBe(false);
+    expect(headingMatches('Variants', 'variant')).toBe(true);
+  });
+
+  it('is case and whitespace insensitive', () => {
+    expect(headingMatches('  ACCESSIBILITY  ', 'accessibility')).toBe(true);
+  });
+});
+
+describe('extractHtmlHeadings', () => {
+  it('pulls headings out of rendered HTML', () => {
+    const html = '<div><h1>Button</h1><h2 class="x">Anatomy</h2><h3>States</h3></div>';
+    expect(extractHtmlHeadings(html)).toEqual(['Button', 'Anatomy', 'States']);
+  });
+
+  it('strips nested markup and decodes entities', () => {
+    const html = '<h2><span>Do</span> &amp; <em>Don&#39;t</em></h2>';
+    expect(extractHtmlHeadings(html)).toEqual(["Do & Don't"]);
+  });
+
+  it('ignores empty headings', () => {
+    expect(extractHtmlHeadings('<h2></h2><h2>  </h2><h2>Real</h2>')).toEqual(['Real']);
+  });
+});
+
+describe('isDocsUrl', () => {
+  it('recognises http and https', () => {
+    expect(isDocsUrl('https://styleguide.example.com/x/p/y')).toBe(true);
+    expect(isDocsUrl('http://localhost:3000/docs')).toBe(true);
+  });
+
+  it('treats everything else as a repo path', () => {
+    expect(isDocsUrl('docs/button.mdx')).toBe(false);
+    expect(isDocsUrl('./docs/button.mdx')).toBe(false);
   });
 });

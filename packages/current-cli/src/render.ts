@@ -1,5 +1,6 @@
 import {
   QUADRANT_LABELS,
+  axesNotFullyCovered,
   type ComponentResult,
   type CurrentReport,
   type HistoryEntry,
@@ -112,11 +113,15 @@ function quadrantSvg(report: CurrentReport): string {
       const cx = x(cs) + Math.cos(angle) * radius;
       const cy = y(ds) + Math.sin(angle) * radius;
       const band = docBand(c.scores.documentation.score);
+      // Position confidence and colour confidence are different claims: the
+      // dashed outline is about where the dot sits, the label also has to
+      // admit when the colour rests on one or two answered metrics.
       const low = c.scores.code.lowConfidence || c.scores.design.lowConfidence;
       const label =
         `${c.name}: code ${fmt(c.scores.code.score)}, design ${fmt(c.scores.design.score)}, ` +
         `${QUADRANT_LABELS[c.quadrant!].toLowerCase()}, ${BAND_WORD[band]}` +
-        (low ? ', low confidence' : '');
+        (low ? ', position from few answered metrics' : '') +
+        (c.scores.documentation.lowConfidence ? ', documentation from few answered metrics' : '');
       return (
         `<g class="dot${low ? ' dot-low-confidence' : ''}" data-component="${escapeHtml(c.name)}" ` +
         `tabindex="0" role="listitem" aria-label="${escapeHtml(label)}">` +
@@ -270,7 +275,12 @@ function componentRows(report: CurrentReport): string {
   const badgeUnmapped = sidesWorthBadging(report.components);
   return report.components
     .map((c) => {
-      const low = c.scores.code.lowConfidence || c.scores.design.lowConfidence;
+      // Every axis, not just the plotted two: a thin documentation score
+      // still colours the dot, so hiding it would colour the chart on
+      // evidence the reader never sees.
+      const thin = (['code', 'design', 'documentation'] as const).filter(
+        (k) => c.scores[k].lowConfidence,
+      );
       const metrics = c.metrics
         .map(
           (m) =>
@@ -294,7 +304,13 @@ function componentRows(report: CurrentReport): string {
                 c.presence.figma,
                 badgeUnmapped,
               )}${presenceBadge('docs', c.presence.docs, badgeUnmapped)}
-              ${low ? '<span class="badge badge-low">low confidence</span>' : ''}
+              ${
+                thin.length === 0
+                  ? ''
+                  : `<span class="badge badge-low">thin ${thin
+                      .map((k) => (k === 'documentation' ? 'docs' : k))
+                      .join(' + ')}</span>`
+              }
             </td>
             <td class="num" data-sort="${c.scores.code.score ?? -1}">${scoreCell(c.scores.code)}</td>
             <td class="num" data-sort="${c.scores.design.score ?? -1}">${scoreCell(
@@ -337,6 +353,22 @@ function srTable(report: CurrentReport): string {
         <thead><tr><th>Component</th><th>Code health</th><th>Design health</th><th>Quadrant</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
+}
+
+/**
+ * Say when an axis total leaves components out. A total computed over 24 of
+ * 31 components is a different claim from one over all 31, and the reader
+ * cannot tell them apart from the number alone.
+ */
+function excludedNote(report: CurrentReport): string {
+  const parts = axesNotFullyCovered(report).map((b) => {
+    const label = b.category === 'documentation' ? 'Docs' : b.category[0].toUpperCase() + b.category.slice(1);
+    const why = b.excluded > 0 ? ` (${b.excluded} too thin to count)` : '';
+    return `${label} over ${b.contributing} of ${b.total} components${why}`;
+  });
+  return parts.length === 0
+    ? ''
+    : `<p class="note">${parts.map((p) => escapeHtml(p)).join(' · ')}.</p>`;
 }
 
 function categoryTotal(report: CurrentReport, category: MetricCategory): string {
@@ -493,6 +525,7 @@ footer a { color: inherit; }
     )}</div></div>
     <div class="stat"><div class="k">Components</div><div class="v">${report.components.length}</div></div>
   </div>
+  ${excludedNote(report)}
 
   <section class="card">
     <h2>Code vs design health</h2>

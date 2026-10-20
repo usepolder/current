@@ -113,6 +113,81 @@ export function averageScore(scores: readonly (number | null)[]): number | null 
   return round1(present.reduce((a, b) => a + b, 0) / present.length);
 }
 
+/**
+ * Average an axis across components, ignoring the ones whose score rests on
+ * too few answered metrics.
+ *
+ * Without this, a failure makes the system look healthier. A component whose
+ * documentation could not be read falls back to whatever single metric was
+ * answered by hand — usually a Yes, so 100% — and a full-weight average of
+ * seven such components lifts the headline above the components that were
+ * actually measured. A number that improves when the network fails is not a
+ * measurement.
+ */
+export function averageConfidentScore(
+  axes: readonly AxisScore[],
+): { score: number | null; contributing: number; excluded: number } {
+  const scored = axes.filter((a) => a.score !== null);
+  const confident = scored.filter((a) => !a.lowConfidence);
+  const excluded = scored.length - confident.length;
+  if (confident.length === 0) {
+    // Everything is thin. Report what there is rather than nothing, but say
+    // how thin it was.
+    return {
+      score: averageScore(scored.map((a) => a.score)),
+      contributing: scored.length,
+      excluded: 0,
+    };
+  }
+  return {
+    score: averageScore(confident.map((a) => a.score)),
+    contributing: confident.length,
+    excluded,
+  };
+}
+
+/**
+ * The weakest of a component's code and design scores — the axis that makes it
+ * broken. Documentation is left out on purpose: a thin doc page is worth
+ * fixing but is not what makes a component urgent, and letting it in would
+ * put a well-built Button behind a badly-built Divider that happens to be
+ * documented.
+ */
+export function weakestAxis(
+  code: number | null,
+  design: number | null,
+): { axis: 'code' | 'design'; score: number } | null {
+  if (code === null && design === null) return null;
+  if (design === null) return { axis: 'code', score: code as number };
+  if (code === null) return { axis: 'design', score: design };
+  return code <= design ? { axis: 'code', score: code } : { axis: 'design', score: design };
+}
+
+/**
+ * Usage-weighted priority, 0-100: how far the component falls short, scaled
+ * by how much of the busiest component's traffic it carries.
+ *
+ *   priority = (100 - weakest axis) x uses / maxUses
+ *
+ * The busiest component with a 40% axis scores 60; a component used a tenth
+ * as often with the same 40% scores 6. Linear on purpose — it is a ranking a
+ * person can reproduce on a napkin, and the raw counts are printed beside it.
+ *
+ * null when nothing was scored, so an unmeasured component is never ranked
+ * as if it were fine.
+ */
+export function usagePriority(
+  code: number | null,
+  design: number | null,
+  uses: number,
+  maxUses: number,
+): number | null {
+  const weakest = weakestAxis(code, design);
+  if (weakest === null) return null;
+  if (maxUses <= 0) return 0;
+  return round1(((100 - weakest.score) * uses) / maxUses);
+}
+
 export function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }

@@ -36,7 +36,7 @@ function figma(): FigmaClient {
 async function fixtureReport(): Promise<CurrentReport> {
   return scanRepo({
     repoRoot: FIXTURE,
-    config: parseConfig(fs.readFileSync(path.join(FIXTURE, '.current.yml'), 'utf8')),
+    config: parseConfig(fs.readFileSync(path.join(FIXTURE, '.polder.yml'), 'utf8')),
     answers: parseAnswers(fs.readFileSync(path.join(FIXTURE, '.current.answers.yml'), 'utf8')),
     figma: figma(),
     now: () => new Date('2026-01-01T00:00:00.000Z'),
@@ -143,6 +143,26 @@ describe('renderReport', () => {
     const html = renderReport({ report });
     expect(html).toContain('code missing');
     expect(html).toContain('figma unavailable');
+  });
+
+  it('discloses a thin documentation score, which colours the dot', async () => {
+    // The docs axis is not plotted, but it drives the dot colour. A score
+    // resting on one answered metric must say so or the chart is coloured on
+    // evidence the reader cannot see.
+    const report = await fixtureReport();
+    const c = report.components[0];
+    c.scores.documentation = {
+      score: 100,
+      yes: 1,
+      no: 0,
+      na: 8,
+      answered: 1,
+      lowConfidence: true,
+      degraded: false,
+    };
+    const html = renderReport({ report });
+    expect(html).toContain('thin docs');
+    expect(html).toContain('documentation from few answered metrics');
   });
 
   it('lists components that could not be plotted', async () => {

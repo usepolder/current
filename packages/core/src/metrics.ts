@@ -1,7 +1,7 @@
 /**
  * The 32 default metrics, transcribed from a production design system's "Component Health"
  * audit sheet (Template tab). Teams can disable any of them or flip an
- * automated one to manual in `.current.yml`; this is a starting point, not a
+ * automated one to manual in `.polder.yml`; this is a starting point, not a
  * fixed rubric.
  *
  * `check` is the id of an automated check, or null when only a human can
@@ -265,7 +265,11 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     subcategory: 'Content',
     guideline: 'Content guidelines are documented',
     check: 'docs.section',
-    params: { headings: ['content', 'copy', 'writing', 'tone'] },
+    // Not a bare "tone": in a component library that word usually names a
+    // visual variant, not writing guidance. Checked against a real
+    // styleguide, "tone" matched Button's "Tone variants" section, which is
+    // about colour.
+    params: { headings: ['content', 'copy', 'writing', 'wording', 'tone of voice'] },
   },
   {
     id: 'DO8',
@@ -291,3 +295,41 @@ export const DEFAULT_METRICS_BY_ID: ReadonlyMap<string, MetricDef> = new Map(
 
 /** Categories in the order they appear in reports and on the quadrant axes. */
 export const CATEGORIES: readonly MetricCategory[] = ['code', 'design', 'documentation'];
+
+/** Order-independent, so reordering a heading list is not mistaken for a new rubric. */
+function stable(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    const items = value.map(stable);
+    return items.every((x) => typeof x === 'string') ? [...items].sort() : items;
+  }
+  if (typeof value === 'object' && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, v]) => [k, stable(v)]),
+    );
+  }
+  return value;
+}
+
+/** What a metric measures. Wording (guideline, note, subcategory) is not part of it. */
+function measures(m: MetricDef): string {
+  return JSON.stringify(stable([m.category, m.check, m.params ?? null]));
+}
+
+/**
+ * One key per metric, for fingerprinting the rubric behind a score.
+ *
+ * A metric that is exactly the default contributes its bare id, so history
+ * recorded before norms were customisable keeps its fingerprint. One that was
+ * added, or changed in what it checks (its check, its params, its category),
+ * contributes its id plus that — otherwise editing DO2's headings would move
+ * every score while the trend line joined the two sides as if nothing changed.
+ * Rewording a guideline changes no score and so changes no key.
+ */
+export function metricKeys(metrics: readonly MetricDef[]): string[] {
+  return metrics.map((m) => {
+    const base = DEFAULT_METRICS_BY_ID.get(m.id);
+    return base !== undefined && measures(base) === measures(m) ? m.id : `${m.id}:${measures(m)}`;
+  });
+}

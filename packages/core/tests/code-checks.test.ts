@@ -175,6 +175,130 @@ export const Button = ({ size, isDisabled }: ButtonProps) => <button />;
   });
 });
 
+describe('code.figma-prop-parity: what counts as a prop', () => {
+  const check = CODE_CHECKS['code.figma-prop-parity'];
+  const figma = ['Size#1:2', 'Loading#5:6'];
+
+  it('does not count a hook’s destructured return value as a prop', () => {
+    const r = check(
+      facts(
+        `
+interface ButtonProps { size: string; }
+export const Button = ({ size }: ButtonProps) => {
+  const { data, isLoading } = useQuery();
+  return <button>{isLoading ? '…' : data}</button>;
+};
+`,
+        { figmaPropertyNames: figma },
+      ),
+    );
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('Loading');
+  });
+
+  it('does not count destructuring inside nested callbacks or other components', () => {
+    const names = collectCodePropNames(
+      parseSource(
+        `
+export const Button = ({ size }: { size: string }) => {
+  const items = list.map(({ id, label }) => id);
+  return <button />;
+};
+const Helper = ({ loading }: { loading: boolean }) => <i />;
+`,
+        'Button.tsx',
+      ),
+      'Button',
+    );
+    expect(names).toEqual(['size']);
+  });
+
+  it('reads only the named component when a file has several', () => {
+    const names = collectCodePropNames(
+      parseSource(
+        `
+export const Button = ({ size }) => <button />;
+export const ButtonGroup = ({ spacing }) => <div />;
+`,
+        'Button.tsx',
+      ),
+      'Button',
+    );
+    expect(names).toEqual(['size']);
+  });
+
+  it('reads props declared only by type when the parameter is not destructured', () => {
+    const names = collectCodePropNames(
+      parseSource(
+        `
+interface BaseProps { tone: string }
+interface ButtonProps extends BaseProps { size: string }
+export function Button(props: ButtonProps) { return <button />; }
+`,
+        'Button.tsx',
+      ),
+      'Button',
+    );
+    expect(names.sort()).toEqual(['size', 'tone']);
+  });
+
+  it('sees through forwardRef, memo and FC type arguments', () => {
+    const src = (body: string): string[] =>
+      collectCodePropNames(
+        parseSource(`interface ButtonProps { size: string; loading: boolean }\n${body}`, 'B.tsx'),
+        'Button',
+      ).sort();
+    expect(src('export const Button = forwardRef<HTMLButtonElement, ButtonProps>((p, ref) => <button />);')).toEqual(
+      ['loading', 'size'],
+    );
+    expect(src('export const Button = React.memo(({ size }: ButtonProps) => <button />);')).toEqual([
+      'loading',
+      'size',
+    ]);
+    expect(src('export const Button: React.FC<ButtonProps> = ({ size }) => <button />;')).toEqual([
+      'loading',
+      'size',
+    ]);
+  });
+
+  it('follows an intersection and Omit to the local props type', () => {
+    const names = collectCodePropNames(
+      parseSource(
+        `
+type Own = { size: string };
+export const Button = ({ size }: Own & Omit<Base, 'x'>) => <button />;
+interface Base { tone: string }
+`,
+        'Button.tsx',
+      ),
+      'Button',
+    );
+    expect(names.sort()).toEqual(['size', 'tone']);
+  });
+
+  it('handles export lists and default exports', () => {
+    expect(
+      collectCodePropNames(
+        parseSource('const Button = ({ size }) => <b />;\nexport { Button };\n', 'B.tsx'),
+        'Button',
+      ),
+    ).toEqual(['size']);
+    expect(
+      collectCodePropNames(
+        parseSource('export default function Button({ size }) { return <b />; }\n', 'B.tsx'),
+        'Button',
+      ),
+    ).toEqual(['size']);
+  });
+
+  it('falls back to Props types, never destructuring, when no component is found', () => {
+    const names = collectCodePropNames(
+      parseSource('type BadgeProps = { tone: string };\nconst { a } = obj;\n', 'Badge.tsx'),
+    );
+    expect(names).toEqual(['tone']);
+  });
+});
+
 describe('prop-name helpers', () => {
   it('strips Figma id suffixes, boolean prefixes, casing and punctuation', () => {
     expect(normalisePropName('Size#1:2')).toBe('size');
@@ -200,5 +324,70 @@ export const Card = ({ title, onClose }: CardProps) => <div />;
   it('collects prop names from a Props type alias', () => {
     const ast = parseSource('type BadgeProps = { tone: string };\n', 'Badge.tsx');
     expect(collectCodePropNames(ast)).toContain('tone');
+  });
+});
+
+describe('custom-norm checks: code.contains / code.forbids', () => {
+  const contains = (src: string, text: string[], o: Partial<CodeFacts> = {}) =>
+    CODE_CHECKS['code.contains'](facts(src, o), { text });
+  const forbids = (src: string, text: string[], o: Partial<CodeFacts> = {}) =>
+    CODE_CHECKS['code.forbids'](facts(src, o), { text });
+
+  it('contains: Yes on a hit, naming the file, and No on a miss', () => {
+    const hit = contains('export const A = forwardRef(() => null);', ['forwardRef']);
+    expect(hit).toMatchObject({ answer: 'Yes' });
+    expect(hit.evidence).toContain('src/Button.tsx');
+    expect(contains('export const A = () => null;', ['forwardRef', 'memo']).answer).toBe('No');
+  });
+
+  it('contains: any one of several strings is enough', () => {
+    expect(contains('const a = memo(() => null);', ['forwardRef', 'memo']).answer).toBe('Yes');
+  });
+
+  it('forbids: No on a hit, Yes when clean', () => {
+    const src = 'export const A = () => <div dangerouslySetInnerHTML={{ __html: x }} />;';
+    expect(forbids(src, ['dangerouslySetInnerHTML']).answer).toBe('No');
+    expect(forbids('export const A = () => <div />;', ['dangerouslySetInnerHTML']).answer).toBe('Yes');
+  });
+
+  it('ignores comments, so a note about a pattern is not a use of it', () => {
+    const src = '// never use dangerouslySetInnerHTML\n/* or forwardRef */\nexport const A = () => <div />;';
+    expect(forbids(src, ['dangerouslySetInnerHTML']).answer).toBe('Yes');
+    expect(contains(src, ['forwardRef']).answer).toBe('No');
+  });
+
+  it('still sees the pattern in a string, which is code', () => {
+    expect(forbids('const s = "dangerouslySetInnerHTML";', ['dangerouslySetInnerHTML']).answer).toBe('No');
+  });
+
+  it('matches literally: regex metacharacters are just characters', () => {
+    expect(contains('const a = 1;', ['.*']).answer).toBe('No');
+    expect(contains('const a = ".*";', ['.*']).answer).toBe('Yes');
+  });
+
+  it('also searches the component’s related files, and names which one', () => {
+    const related = {
+      files: [
+        { filePath: 'src/Button.module.css', source: '.a { color: red !important; }', kind: 'style' as const, ast: null },
+      ],
+      notFollowed: 0,
+      unparseable: [],
+    };
+    const r = forbids('export const A = () => null;', ['!important'], { related });
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('src/Button.module.css');
+  });
+
+  it('skips CSS comments in related style files', () => {
+    const related = {
+      files: [{ filePath: 'a.css', source: '/* no !important */\n.a { color: red; }', kind: 'style' as const, ast: null }],
+      notFollowed: 0,
+      unparseable: [],
+    };
+    expect(forbids('export const A = () => null;', ['!important'], { related }).answer).toBe('Yes');
+  });
+
+  it('is N/A rather than a guess when no text was configured', () => {
+    expect(CODE_CHECKS['code.forbids'](facts('const a = 1;')).answer).toBe('N/A');
   });
 });

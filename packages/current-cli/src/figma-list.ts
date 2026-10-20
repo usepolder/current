@@ -2,7 +2,7 @@ import { collectComponents, type FigmaClient } from '@usepolder/current-core';
 
 /**
  * Print every component in the file with its node id, ready to paste into
- * `.current.yml`. Real design systems bury components inside pages, sections
+ * `.polder.yml`. Real design systems bury components inside pages, sections
  * and frames, so this walks the whole document tree — a scan of the
  * document's direct children finds almost nothing.
  */
@@ -23,7 +23,7 @@ export async function figmaList(client: FigmaClient): Promise<string> {
 
   const lines: string[] = [
     `Found ${components.length} component${components.length === 1 ? '' : 's'}.`,
-    'Paste the ones you want into the `components:` block of .current.yml:',
+    'Paste these under `current.components` in .polder.yml:',
     '',
   ];
 

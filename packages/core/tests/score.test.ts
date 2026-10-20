@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { averageScore, quadrantFor, scoreAnswers } from '@usepolder/current-core';
+import {
+  averageConfidentScore,
+  averageScore,
+  quadrantFor,
+  scoreAnswers,
+} from '@usepolder/current-core';
 import type { Answer } from '@usepolder/current-core';
 
 const yes: Answer = 'Yes';
@@ -99,6 +104,59 @@ describe('quadrantFor', () => {
   it('honours a custom threshold', () => {
     expect(quadrantFor(75, 75, 80)).toBe('monitor');
     expect(quadrantFor(75, 75, 70)).toBe('healthy');
+  });
+});
+
+describe('averageConfidentScore', () => {
+  const axis = (score: number | null, answered: number, lowConfidence = false) => ({
+    score,
+    yes: 0,
+    no: 0,
+    na: 0,
+    answered,
+    lowConfidence,
+    degraded: false,
+  });
+
+  it('leaves thin scores out of the average', () => {
+    // The failure case this exists for: a component whose docs page could not
+    // be read falls back to one hand-answered Yes and scores 100%. Counting
+    // that at full weight makes a network failure look like good health.
+    const result = averageConfidentScore([
+      axis(50, 9),
+      axis(70, 9),
+      axis(100, 1, true),
+      axis(100, 1, true),
+    ]);
+    expect(result.score).toBe(60);
+    expect(result.contributing).toBe(2);
+    expect(result.excluded).toBe(2);
+  });
+
+  it('a failed fetch can no longer raise the total', () => {
+    const measured = [axis(50, 9), axis(70, 9)];
+    const before = averageConfidentScore(measured);
+    const after = averageConfidentScore([...measured, axis(100, 1, true)]);
+    expect(after.score).toBe(before.score);
+  });
+
+  it('ignores undefined axes entirely', () => {
+    const result = averageConfidentScore([axis(80, 9), axis(null, 0)]);
+    expect(result.score).toBe(80);
+    expect(result.contributing).toBe(1);
+    expect(result.excluded).toBe(0);
+  });
+
+  it('falls back to the thin scores when every axis is thin', () => {
+    // Reporting nothing would be worse than reporting something flagged.
+    const result = averageConfidentScore([axis(100, 1, true), axis(0, 1, true)]);
+    expect(result.score).toBe(50);
+    expect(result.contributing).toBe(2);
+    expect(result.excluded).toBe(0);
+  });
+
+  it('returns null when nothing is scored at all', () => {
+    expect(averageConfidentScore([axis(null, 0)]).score).toBeNull();
   });
 });
 

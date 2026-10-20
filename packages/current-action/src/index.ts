@@ -7,23 +7,32 @@ import * as github from '@actions/github';
 import {
   CurrentError,
   FigmaClient,
+  HISTORY_DIR,
+  HISTORY_FILE,
   TOKEN_ENV_VAR,
+  closeRenderer,
+  isDocsUrl,
+  loadUsage,
   appendHistory,
   createLogger,
   entryFromReport,
   lastEntry,
+  metricKeys,
   parseAnswers,
   parseConfig,
   readHistory,
+  resolveUsageFile,
   scanRepo,
   type CurrentConfig,
   type CurrentReport,
 } from '@usepolder/current-core';
-import { BADGE_DIR, BADGE_JSON, BADGE_SVG, badgeJson, badgeSvg } from './badge';
+import { BADGE_DIR, BADGE_JSON, BADGE_SVG, badgeJson, badgeMessage, badgeSvg } from './badge';
 import { CURRENT_MARKER, findExistingComment, renderComment } from './comment';
 import { selectMode, writesComment, writesHistory } from './mode';
+import { createActionRenderer, defaultDeps } from './docs-runtime';
+import { commitAndPush } from './persist';
 
-const CONFIG_FILE = '.current.yml';
+const CONFIG_FILE = '.polder.yml';
 const ANSWERS_FILE = '.current.answers.yml';
 
 function readIfExists(file: string): string | null {
@@ -82,7 +91,7 @@ async function run(): Promise<void> {
   if (rawConfig === null) {
     core.setFailed(
       `Current: no ${CONFIG_FILE} found in ${workdir}. ` +
-        'Create one with a components: block mapping each component to its code path and Figma node id.',
+        'Current shares this file with Drift and Reach — add a `current:` block with your components.',
     );
     return;
   }
@@ -91,13 +100,31 @@ async function run(): Promise<void> {
   const rawAnswers = readIfExists(path.join(workdir, ANSWERS_FILE));
   const answers = rawAnswers === null ? new Map() : parseAnswers(rawAnswers, ANSWERS_FILE);
 
-  const report = await scanRepo({
-    repoRoot: workdir,
-    config,
-    answers,
-    figma: buildFigmaClient(config, verbose),
-    logger: createLogger(verbose, (line) => core.debug(line)),
-  });
+  // Only a URL-mapped docs page needs a browser; a repo without one never
+  // triggers the on-demand install.
+  const logger = createLogger(verbose, (line) => core.debug(line));
+  const renderDocs = config.components.some((c) => c.docs !== null && isDocsUrl(c.docs))
+    ? createActionRenderer(logger, defaultDeps((m) => core.warning(m)))
+    : null;
+
+  const usageFile = resolveUsageFile(config, workdir);
+  const usage = usageFile === null ? null : loadUsage(usageFile);
+  if (usage !== null) logger.trace(`usage: ${usage.size} component(s) from ${usageFile}`);
+
+  let report: CurrentReport;
+  try {
+    report = await scanRepo({
+      repoRoot: workdir,
+      config,
+      answers,
+      usage,
+      figma: buildFigmaClient(config, verbose),
+      renderDocs,
+      logger,
+    });
+  } finally {
+    await closeRenderer(renderDocs);
+  }
 
   const t = report.totals;
   core.info(
@@ -125,10 +152,7 @@ async function run(): Promise<void> {
   const previous = lastEntry(readHistory(workdir));
   const baseScore = previous?.overall ?? null;
   if (previous !== null && previous.metricsHash !== undefined) {
-    const currentHash = entryFromReport(
-      report,
-      config.metrics.map((m) => m.id),
-    ).metricsHash;
+    const currentHash = entryFromReport(report, metricKeys(config.metrics)).metricsHash;
     if (previous.metricsHash !== currentHash) {
       core.warning(
         'Current: the metric set changed since the last recorded scan, so the delta compares ' +
@@ -158,15 +182,40 @@ async function run(): Promise<void> {
   if (writesHistory(mode)) {
     appendHistory(
       workdir,
-      entryFromReport(
-        report,
-        config.metrics.map((m) => m.id),
-        github.context.sha,
-      ),
+      entryFromReport(report, metricKeys(config.metrics), github.context.sha),
     );
-    const files = updateBadge(workdir, report);
+    const files = [...updateBadge(workdir, report), path.join(HISTORY_DIR, HISTORY_FILE)];
     core.info(`Current: history entry appended, badge refreshed (${files.join(', ')})`);
     core.setOutput('changed-files', files.join('\n'));
+
+    // Everything above happened in the runner's checkout, which is thrown away
+    // when the job ends. Without this the badge never appears, the trend log
+    // stays empty and every PR delta reads "first run".
+    const branch = github.context.ref.replace(/^refs\/heads\//, '');
+    const outcome = commitAndPush({
+      cwd: workdir,
+      files,
+      branch,
+      message: `chore: update Current score to ${badgeMessage(report)} [skip ci]`,
+    });
+    switch (outcome.kind) {
+      case 'pushed':
+        core.info(`Current: committed and pushed to ${branch}`);
+        break;
+      case 'unchanged':
+        core.info('Current: nothing to commit');
+        break;
+      case 'failed':
+        // A warning, not a failure: the score is valid and the PR delta does
+        // not depend on this run. But it must be loud, because a badge that
+        // silently never updates is the bug this step exists to fix.
+        core.warning(
+          `Current: could not save the badge and history to ${branch} (${outcome.step}: ${outcome.detail}). ` +
+            'Check that the workflow has `permissions: contents: write`, that actions/checkout kept its ' +
+            'credentials, and that branch protection allows github-actions[bot] to push.',
+        );
+        break;
+    }
   }
 
   if (config.failUnder > 0 && t.overall !== null && t.overall < config.failUnder) {

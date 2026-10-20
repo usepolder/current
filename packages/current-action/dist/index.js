@@ -34140,6 +34140,8 @@ exports.checkSemanticName = checkSemanticName;
 exports.normalisePropName = normalisePropName;
 exports.collectCodePropNames = collectCodePropNames;
 exports.checkFigmaPropParity = checkFigmaPropParity;
+exports.checkContains = checkContains;
+exports.checkForbids = checkForbids;
 const walk_ast_1 = __nccwpck_require__(6975);
 const ICONISH = /(^|[^a-z])icon$|^icon/i;
 function collectJsxElements(ast) {
@@ -34207,26 +34209,58 @@ function checkTextAlternatives(facts) {
 }
 const HEX_COLOR = /#[0-9a-fA-F]{3,8}\b/g;
 const PX_VALUE = /\b\d+(?:\.\d+)?px\b/g;
-/** CO7 — component uses tokens rather than hardcoded colour/spacing values. */
-function checkTokenUsage(facts) {
+/** Every string a script contains — where a hardcoded value would live. */
+function scriptLiterals(ast) {
     const literals = [];
-    (0, walk_ast_1.walkAst)(facts.ast.program, (node) => {
+    (0, walk_ast_1.walkAst)(ast.program, (node) => {
         if (node.type === 'StringLiteral')
             literals.push(node.value);
         else if (node.type === 'TemplateElement')
             literals.push(node.value.raw);
     });
+    return literals;
+}
+/**
+ * The right-hand sides of declarations in a stylesheet. Reading values only
+ * keeps `#face { … }` (an id selector) from being counted as a colour.
+ */
+function styleValues(source) {
+    const stripped = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    return [...stripped.matchAll(/:\s*([^;{}]+)(?=[;}])/g)].map((m) => m[1]);
+}
+/** CO7 — component uses tokens rather than hardcoded colour/spacing values. */
+function checkTokenUsage(facts) {
+    const literals = scriptLiterals(facts.ast);
+    const related = facts.related?.files ?? [];
+    for (const file of related) {
+        if (file.kind === 'style')
+            literals.push(...styleValues(file.source));
+        else if (file.ast !== null)
+            literals.push(...scriptLiterals(file.ast));
+    }
+    const scanned = 1 + related.filter((f) => f.kind === 'style' || f.ast !== null).length;
+    const caveats = [];
+    if (facts.related && facts.related.unparseable.length > 0) {
+        caveats.push(`${facts.related.unparseable.length} unparseable file(s) skipped`);
+    }
+    if (facts.related && facts.related.notFollowed > 0) {
+        caveats.push(`${facts.related.notFollowed} import(s) outside the component's directory not followed`);
+    }
+    const scope = `across ${scanned} file(s)${caveats.length > 0 ? `; ${caveats.join('; ')}` : ''}`;
     const haystack = literals.join('\n');
     const hexes = haystack.match(HEX_COLOR) ?? [];
     const pxs = haystack.match(PX_VALUE) ?? [];
     const total = hexes.length + pxs.length;
     if (total === 0) {
-        return { answer: 'Yes', evidence: 'no hardcoded hex colours or px values in source literals' };
+        return {
+            answer: 'Yes',
+            evidence: `no hardcoded hex colours or px values in source literals ${scope}`,
+        };
     }
     const sample = [...new Set([...hexes, ...pxs])].slice(0, 5).join(', ');
     return {
         answer: 'No',
-        evidence: `${hexes.length} hardcoded hex colour(s) and ${pxs.length} px value(s) (e.g. ${sample})`,
+        evidence: `${hexes.length} hardcoded hex colour(s) and ${pxs.length} px value(s) (e.g. ${sample}) ${scope}`,
     };
 }
 const GENERIC_NAMES = /^(component|wrapper|container|box|thing|temp|tmp|test|new|my|foo|bar|item|element|base|main|index|untitled)\d*$/i;
@@ -34255,36 +34289,198 @@ function normalisePropName(raw) {
         .replace(/[^a-zA-Z0-9]/g, '')
         .toLowerCase();
 }
-/** Prop names from a `*Props` type/interface plus destructured component params. */
-function collectCodePropNames(ast) {
+/** Top-level `interface XProps` / `type XProps = {...}` declarations, by name. */
+function collectTypeDeclarations(ast) {
+    const out = new Map();
+    for (const stmt of ast.program.body) {
+        const decl = (stmt.type === 'ExportNamedDeclaration' || stmt.type === 'ExportDefaultDeclaration') &&
+            stmt.declaration
+            ? stmt.declaration
+            : stmt;
+        if (decl.type === 'TSInterfaceDeclaration' || decl.type === 'TSTypeAliasDeclaration') {
+            out.set(decl.id.name, decl);
+        }
+    }
+    return out;
+}
+/** Add the property names a type contributes, following local references and `extends`. */
+function addTypeProps(type, decls, names, seen) {
+    if (type === null || type === undefined)
+        return;
+    switch (type.type) {
+        case 'TSTypeAnnotation':
+            addTypeProps(type.typeAnnotation, decls, names, seen);
+            return;
+        case 'TSTypeParameterInstantiation':
+            // `FC<ButtonProps>`, `forwardRef<HTMLButtonElement, ButtonProps>` — the
+            // props type is one of the arguments; the ones that do not resolve to a
+            // local declaration (HTMLButtonElement) contribute nothing.
+            for (const param of type.params)
+                addTypeProps(param, decls, names, seen);
+            return;
+        case 'TSTypeLiteral':
+            addMembers(type.members, names);
+            return;
+        case 'TSIntersectionType':
+        case 'TSUnionType':
+            for (const member of type.types)
+                addTypeProps(member, decls, names, seen);
+            return;
+        case 'TSParenthesizedType':
+            addTypeProps(type.typeAnnotation, decls, names, seen);
+            return;
+        case 'TSTypeReference': {
+            if (type.typeName.type === 'Identifier') {
+                addNamedType(type.typeName.name, decls, names, seen);
+            }
+            // `Omit<ButtonProps, 'x'>`, `Readonly<ButtonProps>`: look inside.
+            addTypeProps(type.typeParameters, decls, names, seen);
+            return;
+        }
+        default:
+            return;
+    }
+}
+function addMembers(members, names) {
+    for (const member of members) {
+        if ((member.type === 'TSPropertySignature' || member.type === 'TSMethodSignature') &&
+            member.key.type === 'Identifier') {
+            names.add(member.key.name);
+        }
+    }
+}
+function addNamedType(name, decls, names, seen) {
+    if (seen.has(name))
+        return;
+    seen.add(name);
+    const decl = decls.get(name);
+    if (decl === undefined)
+        return;
+    if (decl.type === 'TSInterfaceDeclaration') {
+        addMembers(decl.body.body, names);
+        for (const parent of decl.extends ?? []) {
+            if (parent.expression.type === 'Identifier')
+                addNamedType(parent.expression.name, decls, names, seen);
+        }
+    }
+    else {
+        addTypeProps(decl.typeAnnotation, decls, names, seen);
+    }
+}
+const WRAPPERS = new Set(['forwardRef', 'memo', 'observer']);
+/** Unwrap `forwardRef(fn)` / `React.memo(fn)` down to the function inside. */
+function unwrapComponent(expr, hints) {
+    if (expr === null || expr === undefined)
+        return null;
+    if (expr.type === 'ArrowFunctionExpression' ||
+        expr.type === 'FunctionExpression' ||
+        expr.type === 'FunctionDeclaration') {
+        return expr;
+    }
+    if (expr.type === 'CallExpression') {
+        const callee = expr.callee;
+        const calleeName = callee.type === 'Identifier'
+            ? callee.name
+            : callee.type === 'MemberExpression' && callee.property.type === 'Identifier'
+                ? callee.property.name
+                : null;
+        if (calleeName !== null && WRAPPERS.has(calleeName)) {
+            hints.push(expr.typeParameters);
+            return unwrapComponent(expr.arguments[0], hints);
+        }
+    }
+    return null;
+}
+/** Top-level function components: `function X`, `const X = () =>`, `export default`, wrapped or not. */
+function findComponents(ast) {
+    const out = [];
+    const add = (name, exported, expr, hints) => {
+        const fn = unwrapComponent(expr, hints);
+        if (fn === null || name === null)
+            return;
+        // Components are capitalised; a lowercase helper is a hook or utility.
+        if (name[0] === undefined || name[0] !== name[0].toUpperCase() || name[0] === name[0].toLowerCase())
+            return;
+        out.push({ name, exported, fn, typeHints: hints });
+    };
+    for (const stmt of ast.program.body) {
+        const exported = stmt.type === 'ExportNamedDeclaration' || stmt.type === 'ExportDefaultDeclaration';
+        const decl = exported && stmt.declaration ? stmt.declaration : stmt;
+        if (decl.type === 'FunctionDeclaration') {
+            add(decl.id?.name ?? null, exported, decl, []);
+        }
+        else if (decl.type === 'VariableDeclaration') {
+            for (const d of decl.declarations) {
+                if (d.id.type !== 'Identifier')
+                    continue;
+                add(d.id.name, exported, d.init, [d.id.typeAnnotation]);
+            }
+        }
+    }
+    // `const Button = ...; export { Button }` / `export default Button`
+    const exportedNames = new Set();
+    for (const stmt of ast.program.body) {
+        if (stmt.type === 'ExportNamedDeclaration' && !stmt.declaration && !stmt.source) {
+            for (const spec of stmt.specifiers) {
+                if (spec.type === 'ExportSpecifier' && spec.local.type === 'Identifier') {
+                    exportedNames.add(spec.local.name);
+                }
+            }
+        }
+        else if (stmt.type === 'ExportDefaultDeclaration' && stmt.declaration.type === 'Identifier') {
+            exportedNames.add(stmt.declaration.name);
+        }
+    }
+    for (const c of out)
+        if (exportedNames.has(c.name))
+            c.exported = true;
+    return out;
+}
+/**
+ * The props a component declares: its own first parameter (destructured names
+ * and its type annotation) and the `*Props` type that describes it.
+ *
+ * Deliberately not "every destructuring pattern in the file". A component
+ * that calls `const { data, isLoading } = useQuery()` has not gained `data`
+ * and `isLoading` props, and counting them would credit a Figma "Loading"
+ * property to a hook's return value.
+ *
+ * Without a `componentName`, or when no component can be found, only the
+ * `*Props` type declarations are read — never destructuring.
+ */
+function collectCodePropNames(ast, componentName) {
     const names = new Set();
-    (0, walk_ast_1.walkAst)(ast.program, (node) => {
-        if (node.type === 'TSInterfaceDeclaration' && /Props$/.test(node.id.name)) {
-            for (const member of node.body.body) {
-                if (member.type === 'TSPropertySignature' && member.key.type === 'Identifier') {
-                    names.add(member.key.name);
+    const decls = collectTypeDeclarations(ast);
+    const seen = new Set();
+    const all = findComponents(ast);
+    const named = componentName === undefined ? [] : all.filter((c) => c.name === componentName);
+    const chosen = named.length > 0 ? named : all.filter((c) => c.exported);
+    if (chosen.length === 0) {
+        for (const name of decls.keys()) {
+            if (/Props$/.test(name))
+                addNamedType(name, decls, names, seen);
+        }
+        return [...names];
+    }
+    for (const c of chosen) {
+        const param = c.fn.params[0];
+        if (param !== undefined) {
+            const target = param.type === 'AssignmentPattern' ? param.left : param;
+            if (target.type === 'ObjectPattern') {
+                for (const prop of target.properties) {
+                    if (prop.type === 'ObjectProperty' && prop.key.type === 'Identifier')
+                        names.add(prop.key.name);
                 }
             }
-            return;
-        }
-        if (node.type === 'TSTypeAliasDeclaration' &&
-            /Props$/.test(node.id.name) &&
-            node.typeAnnotation.type === 'TSTypeLiteral') {
-            for (const member of node.typeAnnotation.members) {
-                if (member.type === 'TSPropertySignature' && member.key.type === 'Identifier') {
-                    names.add(member.key.name);
-                }
-            }
-            return;
-        }
-        if (node.type === 'ObjectPattern') {
-            for (const prop of node.properties) {
-                if (prop.type === 'ObjectProperty' && prop.key.type === 'Identifier') {
-                    names.add(prop.key.name);
-                }
+            if (target.type === 'ObjectPattern' || target.type === 'Identifier') {
+                addTypeProps(target.typeAnnotation, decls, names, seen);
             }
         }
-    });
+        for (const hint of c.typeHints)
+            addTypeProps(hint, decls, names, seen);
+        // The conventional `ButtonProps` even when nothing links it explicitly.
+        addNamedType(`${c.name}Props`, decls, names, seen);
+    }
     return [...names];
 }
 /**
@@ -34299,7 +34495,7 @@ function checkFigmaPropParity(facts) {
     if (facts.figmaPropertyNames.length === 0) {
         return { answer: 'N/A', evidence: 'Figma component declares no properties or variants' };
     }
-    const codeProps = new Set(collectCodePropNames(facts.ast).map(normalisePropName));
+    const codeProps = new Set(collectCodePropNames(facts.ast, facts.componentName).map(normalisePropName));
     const missing = facts.figmaPropertyNames.filter((p) => !codeProps.has(normalisePropName(p)));
     if (missing.length === 0) {
         return {
@@ -34314,7 +34510,90 @@ function checkFigmaPropParity(facts) {
             .join(', ')}`,
     };
 }
+/**
+ * Blank out comments, keeping every offset intact. A norm about code should be
+ * neither satisfied nor tripped by a comment about it: "// never use
+ * dangerouslySetInnerHTML" is not a use.
+ */
+function withoutComments(source, ast) {
+    if (ast === null)
+        return source;
+    let out = source;
+    for (const c of ast.comments ?? []) {
+        if (c.start == null || c.end == null)
+            continue;
+        out = out.slice(0, c.start) + out.slice(c.start, c.end).replace(/[^\n]/g, ' ') + out.slice(c.end);
+    }
+    return out;
+}
+function withoutStyleComments(source) {
+    return source.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' ')).replace(/^\s*\/\/.*$/gm, '');
+}
+/** The entry file and the related files the other code checks read, comments removed. */
+function searchTargets(facts) {
+    const targets = [
+        { filePath: facts.filePath, text: withoutComments(facts.source, facts.ast) },
+    ];
+    for (const f of facts.related?.files ?? []) {
+        targets.push({
+            filePath: f.filePath,
+            text: f.kind === 'style' ? withoutStyleComments(f.source) : withoutComments(f.source, f.ast),
+        });
+    }
+    return targets;
+}
+function textParam(params) {
+    const raw = params?.text;
+    return Array.isArray(raw) ? raw.filter((x) => typeof x === 'string' && x !== '') : [];
+}
+function findFirst(targets, needles) {
+    for (const t of targets) {
+        for (const needle of needles) {
+            if (t.text.includes(needle))
+                return { needle, filePath: t.filePath };
+        }
+    }
+    return null;
+}
+const quoted = (needles) => needles.map((n) => `"${n}"`).join(' / ');
+/**
+ * `code.contains` — Yes when the component's source contains at least one of
+ * `params.text`. Plain substring, case-sensitive, never a pattern: the config
+ * is read straight off pull-request branches, and a regex from a fork is a
+ * way to hang the runner.
+ */
+function checkContains(facts, params) {
+    const needles = textParam(params);
+    if (needles.length === 0)
+        return { answer: 'N/A', evidence: 'no `text` configured for this norm' };
+    const targets = searchTargets(facts);
+    const hit = findFirst(targets, needles);
+    if (hit !== null) {
+        return { answer: 'Yes', evidence: `found "${hit.needle}" in ${hit.filePath}` };
+    }
+    return {
+        answer: 'No',
+        evidence: `none of ${quoted(needles)} found across ${targets.length} file(s), comments excluded`,
+    };
+}
+/** `code.forbids` — Yes when none of `params.text` appears anywhere in the source. */
+function checkForbids(facts, params) {
+    const needles = textParam(params);
+    if (needles.length === 0)
+        return { answer: 'N/A', evidence: 'no `text` configured for this norm' };
+    const targets = searchTargets(facts);
+    const hit = findFirst(targets, needles);
+    if (hit !== null) {
+        return { answer: 'No', evidence: `found "${hit.needle}" in ${hit.filePath}` };
+    }
+    return {
+        answer: 'Yes',
+        evidence: `none of ${quoted(needles)} found across ${targets.length} file(s), comments excluded`,
+    };
+}
 exports.CODE_CHECKS = {
+    'code.contains': checkContains,
+    'code.forbids': checkForbids,
     'code.aria-attributes': checkAriaAttributes,
     'code.text-alternatives': checkTextAlternatives,
     'code.token-usage': checkTokenUsage,
@@ -34370,9 +34649,12 @@ exports.parseConfig = parseConfig;
 exports.resolveComponentPaths = resolveComponentPaths;
 const path = __importStar(__nccwpck_require__(6928));
 const yaml = __importStar(__nccwpck_require__(677));
+const docs_source_1 = __nccwpck_require__(560);
 const errors_1 = __nccwpck_require__(76);
+const code_checks_1 = __nccwpck_require__(1778);
+const figma_checks_1 = __nccwpck_require__(4149);
 const metrics_1 = __nccwpck_require__(1830);
-/** Bump when a change to `.current.yml` would break configs already in the wild. */
+/** Bump when a change to the `current:` block would break configs in the wild. */
 exports.CURRENT_SCHEMA_VERSION = 1;
 exports.DEFAULT_THRESHOLD = 60;
 exports.DEFAULT_MIN_CONFIDENCE = 3;
@@ -34429,30 +34711,201 @@ function parseComponents(raw) {
     }
     return out;
 }
-function parseMetricSelection(raw) {
-    let disabled = [];
-    let forcedManual = [];
-    if (raw !== undefined && raw !== null) {
-        if (!isPlainObject(raw)) {
-            throw new errors_1.ConfigValidationError('`metrics` must be an object with `disable` / `manual` keys');
-        }
-        disabled = requireIdList(raw.disable, 'metrics.disable');
-        forcedManual = requireIdList(raw.manual, 'metrics.manual');
+/** The checks a norm may name, and the one `params` key each takes (null: none). */
+const CHECK_PARAM = {
+    ...Object.fromEntries(Object.keys(code_checks_1.CODE_CHECKS).map((id) => [id, null])),
+    ...Object.fromEntries(Object.keys(figma_checks_1.DESIGN_CHECKS).map((id) => [id, null])),
+    'docs.section': 'headings',
+    'code.contains': 'text',
+    'code.forbids': 'text',
+};
+/** A check only sees its own source, so its id has to match the axis it scores. */
+const CHECK_PREFIX = {
+    code: 'code.',
+    design: 'design.',
+    documentation: 'docs.',
+};
+const METRIC_ID = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
+const OVERRIDE_KEYS = ['guideline', 'subcategory', 'note', 'check', 'params'];
+const CUSTOM_KEYS = ['id', 'category', ...OVERRIDE_KEYS];
+function requireString(value, where) {
+    if (typeof value !== 'string' || value.trim() === '') {
+        throw new errors_1.ConfigValidationError(`${where} must be a non-empty string`);
     }
-    const disabledSet = new Set(disabled);
-    const manualSet = new Set(forcedManual);
-    return metrics_1.DEFAULT_METRICS.filter((m) => !disabledSet.has(m.id)).map((m) => manualSet.has(m.id) ? { ...m, check: null } : m);
+    return value.trim();
 }
-function requireIdList(value, key) {
+function rejectUnknownKeys(entry, allowed, where) {
+    for (const key of Object.keys(entry)) {
+        if (!allowed.includes(key)) {
+            throw new errors_1.ConfigValidationError(`${where}: unknown key "${key}". Allowed: ${allowed.join(', ')}`);
+        }
+    }
+}
+/** Validate a check id and its params against one norm's category. */
+function parseCheck(entry, category, where) {
+    const check = entry.check === undefined || entry.check === null ? null : entry.check;
+    if (check === null) {
+        if (entry.params !== undefined) {
+            throw new errors_1.ConfigValidationError(`${where}: \`params\` needs a \`check\` to configure`);
+        }
+        return { check: null };
+    }
+    if (typeof check !== 'string' || !(check in CHECK_PARAM)) {
+        throw new errors_1.ConfigValidationError(`${where}: "${String(check)}" is not a known check. ` +
+            `Known checks: ${Object.keys(CHECK_PARAM).join(', ')}. ` +
+            'Leave `check` out to answer this norm by hand in the answers file.');
+    }
+    if (!check.startsWith(CHECK_PREFIX[category])) {
+        throw new errors_1.ConfigValidationError(`${where}: check "${check}" cannot score a ${category} norm ` +
+            `(${category} norms use ${CHECK_PREFIX[category]}* checks)`);
+    }
+    const key = CHECK_PARAM[check];
+    if (key === null) {
+        if (entry.params !== undefined) {
+            throw new errors_1.ConfigValidationError(`${where}: check "${check}" takes no params`);
+        }
+        return { check };
+    }
+    const params = entry.params;
+    const list = isPlainObject(params) ? params[key] : undefined;
+    if (!isPlainObject(params) ||
+        Object.keys(params).some((k) => k !== key) ||
+        !Array.isArray(list) ||
+        list.length === 0 ||
+        !list.every((x) => typeof x === 'string' && x.trim() !== '')) {
+        throw new errors_1.ConfigValidationError(`${where}: check "${check}" needs params: { ${key}: [a non-empty list of strings] }`);
+    }
+    return { check, params: { [key]: list.map((x) => x.trim()) } };
+}
+function parseOverrides(raw, base) {
+    const out = new Map();
+    if (raw === undefined || raw === null)
+        return out;
+    if (!isPlainObject(raw)) {
+        throw new errors_1.ConfigValidationError('`metrics.override` must be a mapping of metric id to changes');
+    }
+    const byId = new Map(base.map((m) => [m.id, m]));
+    for (const [id, entry] of Object.entries(raw)) {
+        const where = `metrics.override.${id}`;
+        const original = byId.get(id);
+        if (original === undefined) {
+            throw new errors_1.ConfigValidationError(`${where}: "${id}" is not a built-in metric. Add a new one under \`metrics.custom\` instead.`);
+        }
+        if (!isPlainObject(entry)) {
+            throw new errors_1.ConfigValidationError(`${where} must be a mapping of the fields to change`);
+        }
+        rejectUnknownKeys(entry, OVERRIDE_KEYS, where);
+        // Changing what is checked is one decision, so `check` and `params` are
+        // read together: params never silently carry over onto a different check.
+        const merged = { ...original };
+        if ('guideline' in entry)
+            merged.guideline = requireString(entry.guideline, `${where}.guideline`);
+        if ('subcategory' in entry) {
+            merged.subcategory = requireString(entry.subcategory, `${where}.subcategory`);
+        }
+        if ('note' in entry)
+            merged.note = requireString(entry.note, `${where}.note`);
+        // Changing what is checked is one decision, so `check` and `params` are
+        // read together: params never silently carry over onto a different check.
+        // `params` alone re-tunes the check the norm already has.
+        if ('check' in entry || 'params' in entry) {
+            const source = 'check' in entry ? entry : { ...entry, check: original.check };
+            const { params: _replaced, ...rest } = merged;
+            out.set(id, { ...rest, ...parseCheck(source, original.category, where) });
+            continue;
+        }
+        out.set(id, merged);
+    }
+    return out;
+}
+function parseCustom(raw, taken) {
+    if (raw === undefined || raw === null)
+        return [];
+    if (!Array.isArray(raw)) {
+        throw new errors_1.ConfigValidationError('`metrics.custom` must be a list of norms');
+    }
+    const out = [];
+    raw.forEach((entry, i) => {
+        const where = `metrics.custom[${i}]`;
+        if (!isPlainObject(entry)) {
+            throw new errors_1.ConfigValidationError(`${where} must be a mapping with id, category and guideline`);
+        }
+        rejectUnknownKeys(entry, CUSTOM_KEYS, where);
+        const id = requireString(entry.id, `${where}.id`);
+        if (!METRIC_ID.test(id)) {
+            throw new errors_1.ConfigValidationError(`${where}.id: "${id}" must start with a letter and use only letters, digits, - and _ (max 32)`);
+        }
+        if (taken.has(id)) {
+            throw new errors_1.ConfigValidationError(`${where}.id: "${id}" is already a metric id. ` +
+                'Pick another, or change the built-in one under `metrics.override`.');
+        }
+        taken.add(id);
+        const category = entry.category;
+        if (typeof category !== 'string' || !metrics_1.CATEGORIES.includes(category)) {
+            throw new errors_1.ConfigValidationError(`${where}.category must be one of ${metrics_1.CATEGORIES.join(', ')}`);
+        }
+        const cat = category;
+        out.push({
+            id,
+            category: cat,
+            subcategory: entry.subcategory === undefined ? 'Custom' : requireString(entry.subcategory, `${where}.subcategory`),
+            guideline: requireString(entry.guideline, `${where}.guideline`),
+            ...(entry.note === undefined ? {} : { note: requireString(entry.note, `${where}.note`) }),
+            // No `check` means a person answers it, in the same answers file as the
+            // built-in manual metrics. Not everything an organisation cares about
+            // can be read out of source, and the tool does not pretend otherwise.
+            ...parseCheck(entry, cat, where),
+        });
+    });
+    return out;
+}
+/**
+ * The rubric: built-in metrics, with the organisation's edits applied.
+ *
+ *   built-in ──▶ override (reword, re-tune)  ──▶ + custom ──▶ − disable ──▶ manual
+ *
+ * Everything here can be changed; the scoring arithmetic cannot. A rubric is
+ * opinion, and each organisation's differs. A score whose formula could be
+ * quietly tuned is not comparable to anything.
+ */
+function parseMetricSelection(raw) {
+    if (raw === undefined || raw === null)
+        return [...metrics_1.DEFAULT_METRICS];
+    if (!isPlainObject(raw)) {
+        throw new errors_1.ConfigValidationError('`metrics` must be an object with `disable` / `manual` / `override` / `custom` keys');
+    }
+    rejectUnknownKeys(raw, ['disable', 'manual', 'override', 'custom'], 'metrics');
+    const overrides = parseOverrides(raw.override, metrics_1.DEFAULT_METRICS);
+    const all = [
+        ...metrics_1.DEFAULT_METRICS.map((m) => overrides.get(m.id) ?? m),
+        ...parseCustom(raw.custom, new Set(metrics_1.DEFAULT_METRICS.map((m) => m.id))),
+    ];
+    const known = new Set(all.map((m) => m.id));
+    const disabled = new Set(requireIdList(raw.disable, 'metrics.disable', known));
+    const manual = new Set(requireIdList(raw.manual, 'metrics.manual', known));
+    for (const id of overrides.keys()) {
+        if (disabled.has(id)) {
+            throw new errors_1.ConfigValidationError(`metrics: "${id}" is both disabled and overridden — the override would never run`);
+        }
+    }
+    return all
+        .filter((m) => !disabled.has(m.id))
+        .map((m) => {
+        if (!manual.has(m.id))
+            return m;
+        const { params: _unused, ...rest } = m;
+        return { ...rest, check: null };
+    });
+}
+function requireIdList(value, key, known) {
     if (value === undefined || value === null)
         return [];
     if (!Array.isArray(value) || !value.every((x) => typeof x === 'string')) {
         throw new errors_1.ConfigValidationError(`${key} must be a list of metric ids`);
     }
     for (const id of value) {
-        if (!metrics_1.DEFAULT_METRICS_BY_ID.has(id)) {
-            throw new errors_1.ConfigValidationError(`${key}: "${id}" is not a known metric id. ` +
-                `Known ids: ${metrics_1.DEFAULT_METRICS.map((m) => m.id).join(', ')}`);
+        if (!known.has(id)) {
+            throw new errors_1.ConfigValidationError(`${key}: "${id}" is not a known metric id. Known ids: ${[...known].join(', ')}`);
         }
     }
     return value;
@@ -34463,7 +34916,15 @@ function requireNumberInRange(value, key, min, max) {
     }
     return value;
 }
-function parseConfig(raw, configPath = '.current.yml') {
+/**
+ * Current reads the same `.polder.yml` as Drift and Reach, under a `current:`
+ * key — the way Reach namespaces its own settings under `reach:`.
+ *
+ * One toolchain, one config file. Keys belonging to the other tools
+ * (`component_library`, `allowlist`, `reach:`, detection profiles) are ignored
+ * here, so a repo already set up for Drift or Reach just gains a block.
+ */
+function parseConfig(raw, configPath = '.polder.yml') {
     let parsed;
     try {
         parsed = yaml.load(raw);
@@ -34473,12 +34934,25 @@ function parseConfig(raw, configPath = '.current.yml') {
         throw new errors_1.ParseError(configPath, err.message.split('\n')[0], mark ? mark.line + 1 : undefined, mark ? mark.column + 1 : undefined);
     }
     if (parsed === undefined || parsed === null) {
-        throw new errors_1.ConfigValidationError(`${configPath} is empty — it needs at least a \`components:\` block`);
+        throw new errors_1.ConfigValidationError(`${configPath} is empty — it needs a \`current:\` block with \`components:\` inside it`);
     }
     if (!isPlainObject(parsed)) {
         throw new errors_1.ConfigValidationError(`${configPath} must be a YAML object`);
     }
-    const cfg = parsed;
+    const block = parsed.current;
+    if (block === undefined || block === null) {
+        throw new errors_1.ConfigValidationError(`${configPath} has no \`current:\` block.\n` +
+            'Current shares this file with Drift and Reach; add its settings under `current:`:\n\n' +
+            '  current:\n' +
+            '    components:\n' +
+            '      Button:\n' +
+            '        code: "src/components/Button/Button.tsx"\n' +
+            '        figma: "12:345"\n');
+    }
+    if (!isPlainObject(block)) {
+        throw new errors_1.ConfigValidationError(`${configPath}: \`current\` must be a YAML object`);
+    }
+    const cfg = block;
     let version = exports.CURRENT_SCHEMA_VERSION;
     if (cfg.version !== undefined && cfg.version !== null) {
         if (typeof cfg.version !== 'number' || !Number.isInteger(cfg.version) || cfg.version < 1) {
@@ -34518,7 +34992,23 @@ function parseConfig(raw, configPath = '.current.yml') {
     const failUnder = cfg.fail_under === undefined || cfg.fail_under === null
         ? 0
         : requireNumberInRange(cfg.fail_under, 'fail_under', 0, 100);
-    return { version, figmaFileKey, components, metrics, threshold, minConfidence, failUnder };
+    let usageFile = null;
+    if (cfg.usage !== undefined && cfg.usage !== null) {
+        if (typeof cfg.usage !== 'string' || cfg.usage.trim() === '') {
+            throw new errors_1.ConfigValidationError('`usage` must be the path to a Reach JSON report, e.g. usage: "reach.json"');
+        }
+        usageFile = cfg.usage.trim();
+    }
+    return {
+        version,
+        figmaFileKey,
+        components,
+        metrics,
+        threshold,
+        minConfidence,
+        failUnder,
+        usageFile,
+    };
 }
 /** Validate every mapped path against the repo root. Throws on the first escape. */
 function resolveComponentPaths(config, repoRoot) {
@@ -34526,7 +35016,12 @@ function resolveComponentPaths(config, repoRoot) {
     for (const c of config.components) {
         resolved.set(c.name, {
             code: c.code === null ? null : resolveRepoPath(repoRoot, c.code, c.name, 'code'),
-            docs: c.docs === null ? null : resolveRepoPath(repoRoot, c.docs, c.name, 'docs'),
+            // A hosted docs URL is not a path and must not be path-validated —
+            // the traversal guard exists to stop a config reading arbitrary local
+            // files, which a URL cannot do.
+            docs: c.docs === null || (0, docs_source_1.isDocsUrl)(c.docs)
+                ? c.docs
+                : resolveRepoPath(repoRoot, c.docs, c.name, 'docs'),
         });
     }
     return resolved;
@@ -34542,6 +35037,8 @@ function resolveComponentPaths(config, repoRoot) {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.extractHeadings = extractHeadings;
+exports.extractHtmlHeadings = extractHtmlHeadings;
+exports.headingMatches = headingMatches;
 exports.checkDocSection = checkDocSection;
 const MARKDOWN_HEADING = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/gm;
 /** MDX/JSX docs often use <Section title="Usage"> instead of a heading. */
@@ -34554,42 +35051,227 @@ function extractHeadings(source) {
         out.push(match[1].trim());
     return out;
 }
+const HTML_HEADING = /<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi;
+/** Headings from rendered HTML. Tag-stripped and entity-decoded, nothing fancier. */
+function extractHtmlHeadings(html) {
+    const out = [];
+    for (const match of html.matchAll(HTML_HEADING)) {
+        const text = match[1]
+            .replace(/<[^>]*>/g, ' ')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&#39;|&apos;/g, "'")
+            .replace(/&quot;/g, '"')
+            .replace(/\s+/g, ' ')
+            .trim();
+        if (text !== '')
+            out.push(text);
+    }
+    return out;
+}
 /**
- * Does the doc contain a section matching any of the metric's synonyms?
+ * A heading satisfies a metric when it STARTS with one of the synonyms, on a
+ * word boundary.
  *
- * This proves a section exists, not that it says anything useful — a heading
- * check is the honest ceiling for static analysis of prose. `--verbose`
- * prints the exact headings searched and the ones found, and any of these
- * metrics can be flipped to manual in `.current.yml` if the heuristic does
- * not fit a team's doc conventions.
+ * Start-anchored on purpose. A plain substring test let Button's "Icon Usage"
+ * satisfy "usage guidelines are documented", which it does not — that section
+ * is about icons, not about when to use the component. Requiring the synonym
+ * at the front keeps "Usage", "Usage guidelines" and "When to use" while
+ * dropping "Icon Usage".
  */
+function headingMatches(heading, needle) {
+    const h = heading.toLowerCase().trim();
+    const n = needle.toLowerCase().trim();
+    if (!h.startsWith(n))
+        return false;
+    // Tolerate a plural: real docs head a section "Variants" while the synonym
+    // list says "variant". "Stateful" still fails, because the next character
+    // is not an 's'.
+    const after = h[n.length] === 's' ? h.slice(n.length + 1) : h.slice(n.length);
+    const next = after[0];
+    return next === undefined || !/[a-z0-9]/.test(next);
+}
 function checkDocSection(facts) {
-    if (facts.source === null) {
-        return {
-            answer: facts.missing ? 'No' : 'N/A',
-            evidence: facts.missing
-                ? 'docs file is mapped in .current.yml but missing on disk'
-                : 'no docs file mapped for this component',
-        };
+    if (facts.headings === null) {
+        switch (facts.absence) {
+            case 'missing':
+                return { answer: 'No', evidence: 'docs are mapped in .polder.yml but missing on disk' };
+            case 'no-renderer':
+                return {
+                    answer: 'N/A',
+                    evidence: 'docs are a URL, and no page renderer is installed — run `npm i playwright` to score hosted docs',
+                };
+            case 'unreadable':
+                return {
+                    answer: 'N/A',
+                    evidence: `docs page could not be read: ${facts.absenceDetail ?? 'unknown error'}`,
+                };
+            default:
+                return { answer: 'N/A', evidence: 'no docs mapped for this component' };
+        }
     }
-    const headings = extractHeadings(facts.source);
-    if (headings.length === 0) {
-        return {
-            answer: 'No',
-            evidence: 'docs file has no headings or titled sections to match against',
-        };
+    if (facts.headings.length === 0) {
+        return { answer: 'No', evidence: 'docs have no headings or titled sections to match against' };
     }
-    const needles = facts.headings.map((h) => h.toLowerCase());
-    const hit = headings.find((h) => needles.some((n) => h.toLowerCase().includes(n)));
-    if (hit !== undefined) {
+    const hit = facts.headings.find((h) => facts.wanted.some((n) => headingMatches(h, n)));
+    if (hit !== undefined)
         return { answer: 'Yes', evidence: `matched heading "${hit}"` };
-    }
     return {
         answer: 'No',
-        evidence: `no heading matching ${needles.map((n) => `"${n}"`).join(' / ')} (found: ${headings
-            .slice(0, 6)
-            .join(', ')})`,
+        evidence: `no heading starting with ${facts.wanted
+            .map((n) => `"${n}"`)
+            .join(' / ')} (found: ${facts.headings.slice(0, 8).join(', ')})`,
     };
+}
+
+
+/***/ }),
+
+/***/ 560:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.RendererUnavailableError = exports.RENDERER_INSTALL_HINT = void 0;
+exports.isDocsUrl = isDocsUrl;
+exports.createPlaywrightRenderer = createPlaywrightRenderer;
+exports.closeRenderer = closeRenderer;
+const errors_1 = __nccwpck_require__(76);
+const logger_1 = __nccwpck_require__(9539);
+/** `docs:` is a URL when it looks like one; anything else is a repo path. */
+function isDocsUrl(value) {
+    return /^https?:\/\//i.test(value.trim());
+}
+const DEFAULT_TIMEOUT_MS = 20_000;
+exports.RENDERER_INSTALL_HINT = 'Hosted documentation needs a page renderer. Install it once with `npm i -D playwright` ' +
+    'and `npx playwright install chromium`. Local markdown docs need nothing.';
+/**
+ * A renderer backed by Playwright, loaded lazily.
+ *
+ * Playwright is an OPTIONAL dependency on purpose. It and its browser are
+ * hundreds of megabytes, and most of what Current does — code scanning, Figma,
+ * local markdown — needs none of it. Requiring it for everyone would trade the
+ * `npx and go` install, which is the whole reason this tool is adoptable, for
+ * a feature only teams with hosted docs use. So: absent renderer is a clean
+ * N/A with an install hint, never a crash and never a wrong score.
+ *
+ * Documentation sites are fetched over the network, the same way the Figma
+ * file is. Both are services the user points Current at; nothing is sent to
+ * anyone else.
+ */
+function createPlaywrightRenderer(opts = {}) {
+    const logger = opts.logger ?? logger_1.silentLogger;
+    const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const load = opts.load ??
+        (async () => {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            return __nccwpck_require__(9336);
+        });
+    let browserPromise = null;
+    const browser = async () => {
+        if (browserPromise === null) {
+            browserPromise = (async () => {
+                let mod;
+                try {
+                    mod = await load();
+                }
+                catch (err) {
+                    // A host that knows why it could not provide a browser (the Action,
+                    // when its on-demand install fails) says so; the generic install
+                    // hint would send that user to fix the wrong thing.
+                    throw err instanceof errors_1.CurrentError ? err : new RendererUnavailableError();
+                }
+                const chromium = mod.chromium;
+                if (chromium === undefined)
+                    throw new RendererUnavailableError();
+                logger.trace('docs: launching headless chromium');
+                return chromium.launch({ headless: true });
+            })();
+        }
+        return browserPromise;
+    };
+    const render = async (url) => {
+        const b = await browser();
+        const page = await b.newPage();
+        try {
+            logger.trace(`docs: rendering ${url}`);
+            await page.goto(url, { waitUntil: 'networkidle', timeout });
+            // Client-rendered docs sites serve an empty shell and paint later, so
+            // waiting for real headings is the only reliable signal the page is up.
+            //
+            // This failing is an ERROR, deliberately. Swallowing it and returning
+            // the shell yields zero headings, which scores every documentation
+            // metric "No" — a confident claim that a documented component is
+            // undocumented. "We could not look" has to stay distinguishable from
+            // "we looked and found nothing".
+            try {
+                await page.waitForSelector('h1, h2, h3', { timeout: Math.min(timeout, 15_000) });
+            }
+            catch {
+                throw new Error(`no headings appeared within ${Math.min(timeout, 15_000)}ms — the page may be slow, ` +
+                    'rate limiting, or behind a login');
+            }
+            // The first heading is not the last. A single-page app paints its title
+            // before the body sections, and capturing there reads a half-rendered
+            // page as a component missing sections it documents perfectly well.
+            // Observed directly: the same styleguide scored 59.5%, 62.0% and 63.8%
+            // across three runs before this settle existed. A score that changes
+            // run to run is worse than no score.
+            await waitForStableHeadings(page, Math.min(timeout, 10_000));
+            return await page.content();
+        }
+        finally {
+            await page.close().catch(() => undefined);
+        }
+    };
+    render.close = async () => {
+        if (browserPromise === null)
+            return;
+        const b = await browserPromise.catch(() => null);
+        browserPromise = null;
+        if (b !== null)
+            await b.close().catch(() => undefined);
+    };
+    return render;
+}
+/**
+ * Poll the heading count until it stops changing, so a page is captured once
+ * it has finished painting rather than the moment it starts.
+ */
+async function waitForStableHeadings(page, budgetMs) {
+    const started = Date.now();
+    let previous = -1;
+    let stableFor = 0;
+    while (Date.now() - started < budgetMs) {
+        const count = await page.evaluate('document.querySelectorAll("h1,h2,h3").length');
+        if (typeof count === 'number' && count === previous) {
+            stableFor += 1;
+            // Two consecutive identical readings, 300ms apart, is enough: the
+            // alternative is waiting out the whole budget on every page.
+            if (stableFor >= 2)
+                return;
+        }
+        else {
+            stableFor = 0;
+            previous = typeof count === 'number' ? count : -1;
+        }
+        await new Promise((r) => setTimeout(r, 300));
+    }
+}
+class RendererUnavailableError extends errors_1.CurrentError {
+    constructor() {
+        super(exports.RENDERER_INSTALL_HINT);
+    }
+}
+exports.RendererUnavailableError = RendererUnavailableError;
+/** Close a renderer if it holds a browser. Safe on any renderer. */
+async function closeRenderer(renderer) {
+    const close = renderer?.close;
+    if (typeof close === 'function')
+        await close();
 }
 
 
@@ -34939,7 +35621,7 @@ class FigmaClient {
                     'token has access to this file.', { status: res.status });
             }
             if (res.status === 404) {
-                throw new errors_1.FigmaError(`Figma file "${this.fileKey}" not found (HTTP 404). Check figma.file_key in .current.yml.`, { status: 404 });
+                throw new errors_1.FigmaError(`Figma file "${this.fileKey}" not found (HTTP 404). Check current.figma.file_key in .polder.yml.`, { status: 404 });
             }
             const retryable = res.status === 429 || res.status >= 500;
             if (!retryable || attempt >= this.maxRetries) {
@@ -35095,8 +35777,8 @@ function lastEntry(entries) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.HISTORY_DIR = exports.metricsHash = exports.lastEntry = exports.historyPath = exports.entryFromReport = exports.readHistory = exports.appendHistory = exports.scanRepo = exports.metricsForCategory = exports.countQuadrants = exports.SCHEMA_VERSION = exports.TOKEN_ENV_VAR = exports.FIGMA_API = exports.collectComponents = exports.FigmaClient = exports.extractHeadings = exports.checkDocSection = exports.flatten = exports.figmaPropertyNames = exports.DESIGN_CHECKS = exports.normalisePropName = exports.collectCodePropNames = exports.CODE_CHECKS = exports.QUADRANT_LABELS = exports.round1 = exports.averageScore = exports.quadrantFor = exports.scoreAnswers = exports.silentLogger = exports.createLogger = exports.BABEL_OPTIONS = exports.parseSource = exports.lookupAnswer = exports.coerceAnswer = exports.parseAnswers = exports.DEFAULT_MIN_CONFIDENCE = exports.DEFAULT_THRESHOLD = exports.CURRENT_SCHEMA_VERSION = exports.resolveRepoPath = exports.resolveComponentPaths = exports.parseConfig = exports.CATEGORIES = exports.DEFAULT_METRICS_BY_ID = exports.DEFAULT_METRICS = exports.FigmaError = exports.NoComponentsError = exports.PathTraversalError = exports.ConfigValidationError = exports.ParseError = exports.CurrentError = void 0;
-exports.HISTORY_FILE = void 0;
+exports.FIGMA_API = exports.collectComponents = exports.FigmaClient = exports.RENDERER_INSTALL_HINT = exports.RendererUnavailableError = exports.closeRenderer = exports.createPlaywrightRenderer = exports.isDocsUrl = exports.headingMatches = exports.extractHtmlHeadings = exports.extractHeadings = exports.checkDocSection = exports.flatten = exports.figmaPropertyNames = exports.DESIGN_CHECKS = exports.normalisePropName = exports.collectCodePropNames = exports.CODE_CHECKS = exports.QUADRANT_LABELS = exports.round1 = exports.usagePriority = exports.weakestAxis = exports.averageConfidentScore = exports.averageScore = exports.quadrantFor = exports.scoreAnswers = exports.silentLogger = exports.createLogger = exports.collectRelatedFiles = exports.BABEL_OPTIONS = exports.parseSource = exports.lookupAnswer = exports.coerceAnswer = exports.parseAnswers = exports.DEFAULT_MIN_CONFIDENCE = exports.DEFAULT_THRESHOLD = exports.CURRENT_SCHEMA_VERSION = exports.resolveRepoPath = exports.resolveComponentPaths = exports.parseConfig = exports.metricKeys = exports.CATEGORIES = exports.DEFAULT_METRICS_BY_ID = exports.DEFAULT_METRICS = exports.FigmaError = exports.NoComponentsError = exports.PathTraversalError = exports.ConfigValidationError = exports.ParseError = exports.CurrentError = void 0;
+exports.HISTORY_FILE = exports.HISTORY_DIR = exports.metricsHash = exports.lastEntry = exports.historyPath = exports.entryFromReport = exports.readHistory = exports.appendHistory = exports.scanRepo = exports.MIN_REACH_SCHEMA = exports.resolveUsageFile = exports.loadUsage = exports.parseReachUsage = exports.metricsForCategory = exports.fixFirst = exports.axesNotFullyCovered = exports.countQuadrants = exports.SCHEMA_VERSION = exports.TOKEN_ENV_VAR = void 0;
 var errors_1 = __nccwpck_require__(76);
 Object.defineProperty(exports, "CurrentError", ({ enumerable: true, get: function () { return errors_1.CurrentError; } }));
 Object.defineProperty(exports, "ParseError", ({ enumerable: true, get: function () { return errors_1.ParseError; } }));
@@ -35108,6 +35790,7 @@ var metrics_1 = __nccwpck_require__(1830);
 Object.defineProperty(exports, "DEFAULT_METRICS", ({ enumerable: true, get: function () { return metrics_1.DEFAULT_METRICS; } }));
 Object.defineProperty(exports, "DEFAULT_METRICS_BY_ID", ({ enumerable: true, get: function () { return metrics_1.DEFAULT_METRICS_BY_ID; } }));
 Object.defineProperty(exports, "CATEGORIES", ({ enumerable: true, get: function () { return metrics_1.CATEGORIES; } }));
+Object.defineProperty(exports, "metricKeys", ({ enumerable: true, get: function () { return metrics_1.metricKeys; } }));
 var config_1 = __nccwpck_require__(7369);
 Object.defineProperty(exports, "parseConfig", ({ enumerable: true, get: function () { return config_1.parseConfig; } }));
 Object.defineProperty(exports, "resolveComponentPaths", ({ enumerable: true, get: function () { return config_1.resolveComponentPaths; } }));
@@ -35122,6 +35805,8 @@ Object.defineProperty(exports, "lookupAnswer", ({ enumerable: true, get: functio
 var parse_1 = __nccwpck_require__(1100);
 Object.defineProperty(exports, "parseSource", ({ enumerable: true, get: function () { return parse_1.parseSource; } }));
 Object.defineProperty(exports, "BABEL_OPTIONS", ({ enumerable: true, get: function () { return parse_1.BABEL_OPTIONS; } }));
+var related_files_1 = __nccwpck_require__(214);
+Object.defineProperty(exports, "collectRelatedFiles", ({ enumerable: true, get: function () { return related_files_1.collectRelatedFiles; } }));
 var logger_1 = __nccwpck_require__(9539);
 Object.defineProperty(exports, "createLogger", ({ enumerable: true, get: function () { return logger_1.createLogger; } }));
 Object.defineProperty(exports, "silentLogger", ({ enumerable: true, get: function () { return logger_1.silentLogger; } }));
@@ -35129,6 +35814,9 @@ var score_1 = __nccwpck_require__(3949);
 Object.defineProperty(exports, "scoreAnswers", ({ enumerable: true, get: function () { return score_1.scoreAnswers; } }));
 Object.defineProperty(exports, "quadrantFor", ({ enumerable: true, get: function () { return score_1.quadrantFor; } }));
 Object.defineProperty(exports, "averageScore", ({ enumerable: true, get: function () { return score_1.averageScore; } }));
+Object.defineProperty(exports, "averageConfidentScore", ({ enumerable: true, get: function () { return score_1.averageConfidentScore; } }));
+Object.defineProperty(exports, "weakestAxis", ({ enumerable: true, get: function () { return score_1.weakestAxis; } }));
+Object.defineProperty(exports, "usagePriority", ({ enumerable: true, get: function () { return score_1.usagePriority; } }));
 Object.defineProperty(exports, "round1", ({ enumerable: true, get: function () { return score_1.round1; } }));
 Object.defineProperty(exports, "QUADRANT_LABELS", ({ enumerable: true, get: function () { return score_1.QUADRANT_LABELS; } }));
 var code_checks_1 = __nccwpck_require__(1778);
@@ -35142,6 +35830,14 @@ Object.defineProperty(exports, "flatten", ({ enumerable: true, get: function () 
 var docs_checks_1 = __nccwpck_require__(6556);
 Object.defineProperty(exports, "checkDocSection", ({ enumerable: true, get: function () { return docs_checks_1.checkDocSection; } }));
 Object.defineProperty(exports, "extractHeadings", ({ enumerable: true, get: function () { return docs_checks_1.extractHeadings; } }));
+Object.defineProperty(exports, "extractHtmlHeadings", ({ enumerable: true, get: function () { return docs_checks_1.extractHtmlHeadings; } }));
+Object.defineProperty(exports, "headingMatches", ({ enumerable: true, get: function () { return docs_checks_1.headingMatches; } }));
+var docs_source_1 = __nccwpck_require__(560);
+Object.defineProperty(exports, "isDocsUrl", ({ enumerable: true, get: function () { return docs_source_1.isDocsUrl; } }));
+Object.defineProperty(exports, "createPlaywrightRenderer", ({ enumerable: true, get: function () { return docs_source_1.createPlaywrightRenderer; } }));
+Object.defineProperty(exports, "closeRenderer", ({ enumerable: true, get: function () { return docs_source_1.closeRenderer; } }));
+Object.defineProperty(exports, "RendererUnavailableError", ({ enumerable: true, get: function () { return docs_source_1.RendererUnavailableError; } }));
+Object.defineProperty(exports, "RENDERER_INSTALL_HINT", ({ enumerable: true, get: function () { return docs_source_1.RENDERER_INSTALL_HINT; } }));
 var figma_client_1 = __nccwpck_require__(6835);
 Object.defineProperty(exports, "FigmaClient", ({ enumerable: true, get: function () { return figma_client_1.FigmaClient; } }));
 Object.defineProperty(exports, "collectComponents", ({ enumerable: true, get: function () { return figma_client_1.collectComponents; } }));
@@ -35150,7 +35846,14 @@ Object.defineProperty(exports, "TOKEN_ENV_VAR", ({ enumerable: true, get: functi
 var report_1 = __nccwpck_require__(7797);
 Object.defineProperty(exports, "SCHEMA_VERSION", ({ enumerable: true, get: function () { return report_1.SCHEMA_VERSION; } }));
 Object.defineProperty(exports, "countQuadrants", ({ enumerable: true, get: function () { return report_1.countQuadrants; } }));
+Object.defineProperty(exports, "axesNotFullyCovered", ({ enumerable: true, get: function () { return report_1.axesNotFullyCovered; } }));
+Object.defineProperty(exports, "fixFirst", ({ enumerable: true, get: function () { return report_1.fixFirst; } }));
 Object.defineProperty(exports, "metricsForCategory", ({ enumerable: true, get: function () { return report_1.metricsForCategory; } }));
+var usage_1 = __nccwpck_require__(7876);
+Object.defineProperty(exports, "parseReachUsage", ({ enumerable: true, get: function () { return usage_1.parseReachUsage; } }));
+Object.defineProperty(exports, "loadUsage", ({ enumerable: true, get: function () { return usage_1.loadUsage; } }));
+Object.defineProperty(exports, "resolveUsageFile", ({ enumerable: true, get: function () { return usage_1.resolveUsageFile; } }));
+Object.defineProperty(exports, "MIN_REACH_SCHEMA", ({ enumerable: true, get: function () { return usage_1.MIN_REACH_SCHEMA; } }));
 var scan_1 = __nccwpck_require__(6922);
 Object.defineProperty(exports, "scanRepo", ({ enumerable: true, get: function () { return scan_1.scanRepo; } }));
 var history_1 = __nccwpck_require__(5471);
@@ -35199,7 +35902,7 @@ exports.silentLogger = createLogger(false, () => { });
 /**
  * The 32 default metrics, transcribed from a production design system's "Component Health"
  * audit sheet (Template tab). Teams can disable any of them or flip an
- * automated one to manual in `.current.yml`; this is a starting point, not a
+ * automated one to manual in `.polder.yml`; this is a starting point, not a
  * fixed rubric.
  *
  * `check` is the id of an automated check, or null when only a human can
@@ -35213,6 +35916,7 @@ exports.silentLogger = createLogger(false, () => { });
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.CATEGORIES = exports.DEFAULT_METRICS_BY_ID = exports.DEFAULT_METRICS = void 0;
+exports.metricKeys = metricKeys;
 exports.DEFAULT_METRICS = [
     // ---- Code (component implementation) ----
     {
@@ -35443,7 +36147,11 @@ exports.DEFAULT_METRICS = [
         subcategory: 'Content',
         guideline: 'Content guidelines are documented',
         check: 'docs.section',
-        params: { headings: ['content', 'copy', 'writing', 'tone'] },
+        // Not a bare "tone": in a component library that word usually names a
+        // visual variant, not writing guidance. Checked against a real
+        // styleguide, "tone" matched Button's "Tone variants" section, which is
+        // about colour.
+        params: { headings: ['content', 'copy', 'writing', 'wording', 'tone of voice'] },
     },
     {
         id: 'DO8',
@@ -35465,6 +36173,39 @@ exports.DEFAULT_METRICS = [
 exports.DEFAULT_METRICS_BY_ID = new Map(exports.DEFAULT_METRICS.map((m) => [m.id, m]));
 /** Categories in the order they appear in reports and on the quadrant axes. */
 exports.CATEGORIES = ['code', 'design', 'documentation'];
+/** Order-independent, so reordering a heading list is not mistaken for a new rubric. */
+function stable(value) {
+    if (Array.isArray(value)) {
+        const items = value.map(stable);
+        return items.every((x) => typeof x === 'string') ? [...items].sort() : items;
+    }
+    if (typeof value === 'object' && value !== null) {
+        return Object.fromEntries(Object.entries(value)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([k, v]) => [k, stable(v)]));
+    }
+    return value;
+}
+/** What a metric measures. Wording (guideline, note, subcategory) is not part of it. */
+function measures(m) {
+    return JSON.stringify(stable([m.category, m.check, m.params ?? null]));
+}
+/**
+ * One key per metric, for fingerprinting the rubric behind a score.
+ *
+ * A metric that is exactly the default contributes its bare id, so history
+ * recorded before norms were customisable keeps its fingerprint. One that was
+ * added, or changed in what it checks (its check, its params, its category),
+ * contributes its id plus that — otherwise editing DO2's headings would move
+ * every score while the trend line joined the two sides as if nothing changed.
+ * Rewording a guideline changes no score and so changes no key.
+ */
+function metricKeys(metrics) {
+    return metrics.map((m) => {
+        const base = exports.DEFAULT_METRICS_BY_ID.get(m.id);
+        return base !== undefined && measures(base) === measures(m) ? m.id : `${m.id}:${measures(m)}`;
+    });
+}
 
 
 /***/ }),
@@ -35507,17 +36248,230 @@ function parseSource(fileContent, filePath) {
 
 /***/ }),
 
+/***/ 214:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.collectRelatedFiles = collectRelatedFiles;
+const fs = __importStar(__nccwpck_require__(9896));
+const path = __importStar(__nccwpck_require__(6928));
+const parse_1 = __nccwpck_require__(1100);
+const SCRIPT_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
+const STYLE_EXTS = ['.css', '.scss', '.sass', '.less'];
+const MAX_FILES = 50;
+function isRelative(specifier) {
+    return specifier.startsWith('./') || specifier.startsWith('../');
+}
+function isFile(p) {
+    try {
+        return fs.statSync(p).isFile();
+    }
+    catch {
+        return false;
+    }
+}
+/** Resolve a relative specifier the way a bundler would: exact, +ext, then index. */
+function resolveSpecifier(fromFile, specifier) {
+    const base = path.resolve(path.dirname(fromFile), specifier);
+    const candidates = [
+        base,
+        ...[...SCRIPT_EXTS, ...STYLE_EXTS].map((e) => base + e),
+        // TS projects import './Foo.js' for Foo.ts.
+        ...(/\.[cm]?jsx?$/.test(base)
+            ? SCRIPT_EXTS.map((e) => base.replace(/\.[cm]?jsx?$/, e))
+            : []),
+        ...SCRIPT_EXTS.map((e) => path.join(base, `index${e}`)),
+    ];
+    return candidates.find(isFile) ?? null;
+}
+/** `import`, `export … from`, and `export *` sources, in source order. */
+function importSpecifiers(ast) {
+    const out = [];
+    for (const stmt of ast.program.body) {
+        if (stmt.type === 'ImportDeclaration')
+            out.push(stmt.source.value);
+        else if ((stmt.type === 'ExportNamedDeclaration' || stmt.type === 'ExportAllDeclaration') &&
+            stmt.source) {
+            out.push(stmt.source.value);
+        }
+    }
+    return out;
+}
+function within(dir, file) {
+    const rel = path.relative(dir, file);
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+/**
+ * Find the files that make up a component beyond its entry file: the
+ * `Button.styles.ts`, `Button.module.css`, `./variants` it imports.
+ *
+ * Only relative imports are followed, and only while they stay inside the
+ * entry file's directory. That bound is what keeps this an answer to "what
+ * does *this component* hardcode" — following `../Icon` or `../../tokens`
+ * would blame Button for someone else's values. A file mapped as another
+ * component's own code is never claimed, for the same reason, which matters in
+ * flat layouts where every component shares a directory.
+ *
+ * `notFollowed` counts what was skipped so the evidence can say so, rather than
+ * letting a partial scan read as a complete one.
+ */
+function collectRelatedFiles(entryFile, entryAst, repoRoot, otherComponentFiles) {
+    const dir = path.dirname(entryFile);
+    const result = { files: [], notFollowed: 0, unparseable: [] };
+    const visited = new Set([path.resolve(entryFile)]);
+    const skipped = new Set();
+    const queue = [{ file: entryFile, ast: entryAst }];
+    while (queue.length > 0) {
+        const current = queue.shift();
+        for (const specifier of importSpecifiers(current.ast)) {
+            if (!isRelative(specifier))
+                continue;
+            const resolved = resolveSpecifier(current.file, specifier);
+            if (resolved === null)
+                continue;
+            const abs = path.resolve(resolved);
+            if (visited.has(abs) || skipped.has(abs))
+                continue;
+            // realpath, so a symlink inside the component directory cannot lead
+            // out of the repo.
+            const real = fs.realpathSync(abs);
+            const realRoot = fs.realpathSync(repoRoot);
+            if (!within(dir, abs) ||
+                !within(realRoot, real) ||
+                otherComponentFiles.has(abs) ||
+                otherComponentFiles.has(real)) {
+                skipped.add(abs);
+                continue;
+            }
+            if (visited.size > MAX_FILES) {
+                skipped.add(abs);
+                continue;
+            }
+            visited.add(abs);
+            const rel = path.relative(repoRoot, abs);
+            const ext = path.extname(abs).toLowerCase();
+            const source = fs.readFileSync(abs, 'utf8');
+            if (STYLE_EXTS.includes(ext)) {
+                result.files.push({ filePath: rel, source, kind: 'style', ast: null });
+                continue;
+            }
+            if (!SCRIPT_EXTS.includes(ext))
+                continue;
+            try {
+                const ast = (0, parse_1.parseSource)(source, rel);
+                result.files.push({ filePath: rel, source, kind: 'script', ast });
+                queue.push({ file: abs, ast });
+            }
+            catch {
+                result.unparseable.push(rel);
+                result.files.push({ filePath: rel, source, kind: 'script', ast: null });
+            }
+        }
+    }
+    result.notFollowed = skipped.size;
+    return result;
+}
+
+
+/***/ }),
+
 /***/ 7797:
-/***/ ((__unused_webpack_module, exports) => {
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.SCHEMA_VERSION = void 0;
+exports.axesNotFullyCovered = axesNotFullyCovered;
+exports.fixFirst = fixFirst;
 exports.metricsForCategory = metricsForCategory;
 exports.countQuadrants = countQuadrants;
+const metrics_1 = __nccwpck_require__(1830);
+const score_1 = __nccwpck_require__(3949);
 /** Bump when the JSON report's shape changes in a way consumers would notice. */
 exports.SCHEMA_VERSION = 1;
+/**
+ * Axes whose total was computed over fewer than all components, for any
+ * reason — some were too thin to count, others were never scored at all.
+ *
+ * Both need saying. A documentation figure averaged over one of three
+ * components is a claim about that one component, and a reader who sees only
+ * the number cannot tell. Surfaced here rather than in each renderer so the
+ * report, the terminal and the PR comment cannot disagree about it.
+ */
+function axesNotFullyCovered(report) {
+    const total = report.components.length;
+    return metrics_1.CATEGORIES.map((category) => ({
+        category,
+        contributing: report.totals.basis[category].contributing,
+        total,
+        excluded: report.totals.basis[category].excluded,
+    })).filter((b) => b.contributing > 0 && b.contributing < b.total);
+}
+/**
+ * The components worth fixing first: below the threshold on code or design,
+ * actually in use, most urgent first. A weak component nothing renders is not
+ * on the list — it is real, but it is not what to do this week.
+ */
+function fixFirst(report, limit = 5) {
+    if (report.usage === null)
+        return [];
+    const total = report.usage.totalUses;
+    const entries = [];
+    for (const c of report.components) {
+        if (c.usage === null || c.usage <= 0 || c.priority === null)
+            continue;
+        const weakest = (0, score_1.weakestAxis)(c.scores.code.score, c.scores.design.score);
+        if (weakest === null || weakest.score >= report.threshold)
+            continue;
+        entries.push({
+            name: c.name,
+            uses: c.usage,
+            priority: c.priority,
+            share: total > 0 ? Math.round((c.usage / total) * 1000) / 10 : null,
+            axis: weakest.axis,
+            score: weakest.score,
+        });
+    }
+    return entries
+        .sort((a, b) => b.priority - a.priority || b.uses - a.uses || (a.name < b.name ? -1 : 1))
+        .slice(0, limit);
+}
 function metricsForCategory(metrics, category) {
     return metrics.filter((m) => m.category === category);
 }
@@ -35581,11 +36535,13 @@ const answers_1 = __nccwpck_require__(4928);
 const code_checks_1 = __nccwpck_require__(1778);
 const config_1 = __nccwpck_require__(7369);
 const docs_checks_1 = __nccwpck_require__(6556);
+const docs_source_1 = __nccwpck_require__(560);
 const errors_1 = __nccwpck_require__(76);
 const figma_checks_1 = __nccwpck_require__(4149);
 const logger_1 = __nccwpck_require__(9539);
 const metrics_1 = __nccwpck_require__(1830);
 const parse_1 = __nccwpck_require__(1100);
+const related_files_1 = __nccwpck_require__(214);
 const report_1 = __nccwpck_require__(7797);
 const score_1 = __nccwpck_require__(3949);
 /**
@@ -35606,7 +36562,7 @@ async function scanRepo(opts) {
     const logger = opts.logger ?? logger_1.silentLogger;
     const { config, repoRoot, answers } = opts;
     if (config.components.length === 0) {
-        throw new errors_1.NoComponentsError('.current.yml');
+        throw new errors_1.NoComponentsError('.polder.yml');
     }
     // Throws on any path escaping the repo root, before a single file is read.
     const resolvedPaths = (0, config_1.resolveComponentPaths)(config, repoRoot);
@@ -35631,39 +36587,48 @@ async function scanRepo(opts) {
     else if (figmaIds.length > 0) {
         figmaUnavailable = `No Figma token provided; design metrics were not evaluated.`;
     }
-    const loaded = config.components.map((mapping) => {
+    const loaded = [];
+    for (const mapping of config.components) {
         const paths = resolvedPaths.get(mapping.name);
         let source = null;
         let ast = null;
+        let related = null;
         if (paths.code !== null && fs.existsSync(paths.code)) {
             source = fs.readFileSync(paths.code, 'utf8');
             ast = (0, parse_1.parseSource)(source, path.relative(repoRoot, paths.code));
             logger.trace(`${mapping.name}: parsed ${path.relative(repoRoot, paths.code)}`);
+            // Another component's entry file is never this component's.
+            const others = new Set();
+            for (const [name, p] of resolvedPaths) {
+                if (name !== mapping.name && p.code !== null)
+                    others.add(path.resolve(p.code));
+            }
+            related = (0, related_files_1.collectRelatedFiles)(paths.code, ast, repoRoot, others);
+            logger.trace(`${mapping.name}: ${related.files.length} related file(s)` +
+                (related.files.length > 0 ? ` — ${related.files.map((f) => f.filePath).join(', ')}` : ''));
         }
         else if (paths.code !== null) {
             logger.trace(`${mapping.name}: code file missing at ${mapping.code}`);
         }
-        let docsSource = null;
-        if (paths.docs !== null && fs.existsSync(paths.docs)) {
-            docsSource = fs.readFileSync(paths.docs, 'utf8');
-        }
-        else if (paths.docs !== null) {
-            logger.trace(`${mapping.name}: docs file missing at ${mapping.docs}`);
-        }
-        return {
+        const docs = await loadDocs(mapping.name, paths.docs, opts, logger);
+        loaded.push({
             name: mapping.name,
             codePath: mapping.code,
             docsPath: mapping.docs,
             source,
             ast,
-            docsSource,
+            related,
+            docsHeadings: docs.headings,
+            docsAbsence: docs.absence,
+            docsAbsenceDetail: docs.detail,
             figmaNode: mapping.figma === null ? null : figmaNodes.get(mapping.figma) ?? null,
-        };
-    });
-    const components = loaded.map((c, i) => scoreComponent(c, config, answers, logger, {
+        });
+    }
+    const scored = loaded.map((c, i) => scoreComponent(c, config, answers, logger, {
         figmaMapped: config.components[i].figma !== null,
         figmaUnavailable: figmaUnavailable !== null,
     }));
+    const { components, usage } = applyUsage(scored, opts.usage ?? null);
     // Figma being unreachable is only worth warning about if it actually cost
     // a score. When every design metric was answered by a human, it did not,
     // and a banner saying "design metrics were not evaluated" above a design
@@ -35672,15 +36637,26 @@ async function scanRepo(opts) {
         logger.trace('figma: unavailable, but no design metric needed it — not reported as a degraded run');
         figmaUnavailable = null;
     }
+    const code = (0, score_1.averageConfidentScore)(components.map((c) => c.scores.code));
+    const design = (0, score_1.averageConfidentScore)(components.map((c) => c.scores.design));
+    const documentation = (0, score_1.averageConfidentScore)(components.map((c) => c.scores.documentation));
     const totals = {
-        code: (0, score_1.averageScore)(components.map((c) => c.scores.code.score)),
-        design: (0, score_1.averageScore)(components.map((c) => c.scores.design.score)),
-        documentation: (0, score_1.averageScore)(components.map((c) => c.scores.documentation.score)),
-        overall: null,
+        code: code.score,
+        design: design.score,
+        documentation: documentation.score,
+        overall: (0, score_1.averageScore)([code.score, design.score, documentation.score]),
         componentsScored: components.filter((c) => c.quadrant !== null).length,
         componentsNotPlotted: components.filter((c) => c.quadrant === null).length,
+        /** Per-axis component counts behind each total, and how many were too thin to count. */
+        basis: {
+            code: { contributing: code.contributing, excluded: code.excluded },
+            design: { contributing: design.contributing, excluded: design.excluded },
+            documentation: {
+                contributing: documentation.contributing,
+                excluded: documentation.excluded,
+            },
+        },
     };
-    totals.overall = (0, score_1.averageScore)([totals.code, totals.design, totals.documentation]);
     return {
         schemaVersion: report_1.SCHEMA_VERSION,
         generatedAt: (opts.now ?? (() => new Date()))().toISOString(),
@@ -35688,9 +36664,86 @@ async function scanRepo(opts) {
         minConfidence: config.minConfidence,
         figmaUnavailable,
         components,
+        usage,
         totals,
         quadrantCounts: (0, report_1.countQuadrants)(components),
     };
+}
+/**
+ * Attach usage and priority. A mapped component Reach never saw is used zero
+ * times, not unknown: the data exists, and it says nobody renders it.
+ *
+ * The priority scale is the busiest of *these* components, so a repo whose
+ * heaviest DS component is not scored by Current still gets a 0-100 ranking
+ * among the ones that are.
+ */
+function applyUsage(components, usage) {
+    if (usage === null)
+        return { components, usage: null };
+    const uses = components.map((c) => usage.get(c.name) ?? 0);
+    const maxUses = Math.max(0, ...uses);
+    const mapped = new Set(components.map((c) => c.name));
+    return {
+        components: components.map((c, i) => ({
+            ...c,
+            usage: uses[i],
+            priority: (0, score_1.usagePriority)(c.scores.code.score, c.scores.design.score, uses[i], maxUses),
+        })),
+        usage: {
+            totalUses: [...usage.values()].reduce((a, b) => a + b, 0),
+            unmatched: [...usage]
+                .filter(([name]) => !mapped.has(name))
+                .map(([name, n]) => ({ name, uses: n }))
+                .sort((a, b) => b.uses - a.uses || (a.name < b.name ? -1 : 1)),
+        },
+    };
+}
+/**
+ * Read a component's documentation, from a repo file or a hosted page.
+ *
+ * A URL that cannot be rendered is N/A, never No: "we could not look" and
+ * "we looked and it is not documented" are different answers, and conflating
+ * them would mark a well-documented system as undocumented the moment a
+ * renderer is missing or a site is down.
+ */
+async function loadDocs(component, docs, opts, logger) {
+    if (docs === null)
+        return { headings: null, absence: 'unmapped' };
+    if (!(0, docs_source_1.isDocsUrl)(docs)) {
+        if (!fs.existsSync(docs)) {
+            logger.trace(`${component}: docs file missing at ${docs}`);
+            return { headings: null, absence: 'missing' };
+        }
+        const headings = (0, docs_checks_1.extractHeadings)(fs.readFileSync(docs, 'utf8'));
+        logger.trace(`${component}: ${headings.length} heading(s) from the docs file`);
+        return { headings, absence: null };
+    }
+    if (opts.renderDocs === undefined || opts.renderDocs === null) {
+        logger.trace(`${component}: docs are a URL but no renderer was provided`);
+        return { headings: null, absence: 'no-renderer' };
+    }
+    try {
+        const html = await opts.renderDocs(docs);
+        const headings = (0, docs_checks_1.extractHtmlHeadings)(html);
+        if (headings.length === 0) {
+            // A hosted docs page with no headings at all is far more likely to be
+            // an incomplete render than a real page documenting nothing. Treat it
+            // as unread rather than scoring the component as undocumented.
+            logger.trace(`${component}: ${docs} returned no headings — treating as unread`);
+            return {
+                headings: null,
+                absence: 'unreadable',
+                detail: 'page returned no headings; it may not have finished rendering',
+            };
+        }
+        logger.trace(`${component}: ${headings.length} heading(s) from ${docs}`);
+        return { headings, absence: null };
+    }
+    catch (err) {
+        const detail = err.message.split('\n')[0];
+        logger.trace(`${component}: docs page failed — ${detail}`);
+        return { headings: null, absence: 'unreadable', detail };
+    }
 }
 function scoreComponent(c, config, answers, logger, ctx) {
     const results = [];
@@ -35702,6 +36755,7 @@ function scoreComponent(c, config, answers, logger, ctx) {
             source: c.source ?? '',
             ast: c.ast,
             figmaPropertyNames: c.figmaNode === null ? null : (0, figma_checks_1.figmaPropertyNames)(c.figmaNode),
+            ...(c.related === null ? {} : { related: c.related }),
         };
     const designFacts = c.figmaNode === null ? null : { componentName: c.name, node: c.figmaNode };
     for (const metric of config.metrics) {
@@ -35780,10 +36834,12 @@ function scoreComponent(c, config, answers, logger, ctx) {
                     : c.figmaNode === null
                         ? 'missing'
                         : 'present',
-            docs: c.docsPath === null ? 'unmapped' : c.docsSource === null ? 'missing' : 'present',
+            docs: c.docsPath === null ? 'unmapped' : c.docsHeadings === null ? 'missing' : 'present',
         },
         scores,
         quadrant: (0, score_1.quadrantFor)(scores.code.score, scores.design.score, config.threshold),
+        usage: null,
+        priority: null,
         metrics: results,
     };
 }
@@ -35800,7 +36856,7 @@ function runCheck(checkId, params, args) {
         const fn = code_checks_1.CODE_CHECKS[checkId];
         if (!fn)
             return { answer: 'N/A', evidence: `unknown check "${checkId}"` };
-        return fn(args.codeFacts);
+        return fn(args.codeFacts, params);
     }
     if (checkId.startsWith('design.')) {
         if (args.designFacts === null) {
@@ -35818,12 +36874,12 @@ function runCheck(checkId, params, args) {
         return fn(args.designFacts);
     }
     if (checkId === 'docs.section') {
-        const headings = params?.headings ?? [];
         return (0, docs_checks_1.checkDocSection)({
             componentName: args.component.name,
-            source: args.component.docsSource,
-            missing: args.component.docsPath !== null && args.component.docsSource === null,
-            headings,
+            headings: args.component.docsHeadings,
+            absence: args.component.docsAbsence,
+            absenceDetail: args.component.docsAbsenceDetail,
+            wanted: params?.headings ?? [],
         });
     }
     return { answer: 'N/A', evidence: `unknown check "${checkId}"` };
@@ -35842,6 +36898,9 @@ exports.QUADRANT_LABELS = void 0;
 exports.scoreAnswers = scoreAnswers;
 exports.quadrantFor = quadrantFor;
 exports.averageScore = averageScore;
+exports.averageConfidentScore = averageConfidentScore;
+exports.weakestAxis = weakestAxis;
+exports.usagePriority = usagePriority;
 exports.round1 = round1;
 function scoreAnswers(answers, minConfidence, degraded = false) {
     let yes = 0;
@@ -35918,8 +36977,191 @@ function averageScore(scores) {
         return null;
     return round1(present.reduce((a, b) => a + b, 0) / present.length);
 }
+/**
+ * Average an axis across components, ignoring the ones whose score rests on
+ * too few answered metrics.
+ *
+ * Without this, a failure makes the system look healthier. A component whose
+ * documentation could not be read falls back to whatever single metric was
+ * answered by hand — usually a Yes, so 100% — and a full-weight average of
+ * seven such components lifts the headline above the components that were
+ * actually measured. A number that improves when the network fails is not a
+ * measurement.
+ */
+function averageConfidentScore(axes) {
+    const scored = axes.filter((a) => a.score !== null);
+    const confident = scored.filter((a) => !a.lowConfidence);
+    const excluded = scored.length - confident.length;
+    if (confident.length === 0) {
+        // Everything is thin. Report what there is rather than nothing, but say
+        // how thin it was.
+        return {
+            score: averageScore(scored.map((a) => a.score)),
+            contributing: scored.length,
+            excluded: 0,
+        };
+    }
+    return {
+        score: averageScore(confident.map((a) => a.score)),
+        contributing: confident.length,
+        excluded,
+    };
+}
+/**
+ * The weakest of a component's code and design scores — the axis that makes it
+ * broken. Documentation is left out on purpose: a thin doc page is worth
+ * fixing but is not what makes a component urgent, and letting it in would
+ * put a well-built Button behind a badly-built Divider that happens to be
+ * documented.
+ */
+function weakestAxis(code, design) {
+    if (code === null && design === null)
+        return null;
+    if (design === null)
+        return { axis: 'code', score: code };
+    if (code === null)
+        return { axis: 'design', score: design };
+    return code <= design ? { axis: 'code', score: code } : { axis: 'design', score: design };
+}
+/**
+ * Usage-weighted priority, 0-100: how far the component falls short, scaled
+ * by how much of the busiest component's traffic it carries.
+ *
+ *   priority = (100 - weakest axis) x uses / maxUses
+ *
+ * The busiest component with a 40% axis scores 60; a component used a tenth
+ * as often with the same 40% scores 6. Linear on purpose — it is a ranking a
+ * person can reproduce on a napkin, and the raw counts are printed beside it.
+ *
+ * null when nothing was scored, so an unmeasured component is never ranked
+ * as if it were fine.
+ */
+function usagePriority(code, design, uses, maxUses) {
+    const weakest = weakestAxis(code, design);
+    if (weakest === null)
+        return null;
+    if (maxUses <= 0)
+        return 0;
+    return round1(((100 - weakest.score) * uses) / maxUses);
+}
 function round1(n) {
     return Math.round(n * 10) / 10;
+}
+
+
+/***/ }),
+
+/***/ 7876:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.MIN_REACH_SCHEMA = void 0;
+exports.parseReachUsage = parseReachUsage;
+exports.loadUsage = loadUsage;
+exports.resolveUsageFile = resolveUsageFile;
+const fs = __importStar(__nccwpck_require__(9896));
+const path = __importStar(__nccwpck_require__(6928));
+const config_1 = __nccwpck_require__(7369);
+const errors_1 = __nccwpck_require__(76);
+/** First Reach report schema that carries per-component `usage`. */
+exports.MIN_REACH_SCHEMA = 2;
+/**
+ * Read per-component usage out of a Reach JSON report.
+ *
+ * A v1 Reach report has no `usage` at all. That has to fail loudly rather than
+ * read as "nothing is used": every component would get priority 0 and the
+ * ranking would quietly be empty, which looks exactly like a healthy system.
+ */
+function parseReachUsage(raw, source) {
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    }
+    catch (err) {
+        throw new errors_1.ParseError(source, `not valid JSON (${err.message})`);
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        throw new errors_1.ConfigValidationError(`${source} is not a Reach report (expected a JSON object)`);
+    }
+    const report = parsed;
+    if (report.tool !== 'reach') {
+        throw new errors_1.ConfigValidationError(`${source} is not a Reach report (its "tool" is ${JSON.stringify(report.tool ?? null)}). ` +
+            'Produce one with `npx @usepolder/reach --json`.');
+    }
+    if (typeof report.schemaVersion !== 'number' || report.schemaVersion < exports.MIN_REACH_SCHEMA) {
+        throw new errors_1.ConfigValidationError(`${source} is a Reach report from before per-component usage (schema ` +
+            `${String(report.schemaVersion)}; need ${exports.MIN_REACH_SCHEMA} or later). Upgrade Reach and re-run it.`);
+    }
+    const usage = report.usage;
+    if (typeof usage !== 'object' || usage === null || Array.isArray(usage)) {
+        throw new errors_1.ConfigValidationError(`${source} has no \`usage\` object`);
+    }
+    const map = new Map();
+    for (const [name, uses] of Object.entries(usage)) {
+        if (typeof uses !== 'number' || !Number.isFinite(uses) || uses < 0) {
+            throw new errors_1.ConfigValidationError(`${source}: usage.${name} must be a non-negative number, got ${JSON.stringify(uses)}`);
+        }
+        map.set(name, uses);
+    }
+    return map;
+}
+/** Read and parse a Reach report from an absolute path. */
+function loadUsage(file) {
+    let raw;
+    try {
+        raw = fs.readFileSync(file, 'utf8');
+    }
+    catch (err) {
+        const code = err.code;
+        throw new errors_1.CurrentError(code === 'ENOENT'
+            ? `Usage file not found: ${file}. Run Reach first (\`npx @usepolder/reach --json > reach.json\`).`
+            : `Cannot read the usage file ${file}: ${err.message}`);
+    }
+    return parseReachUsage(raw, path.basename(file));
+}
+/**
+ * The configured usage file, resolved and confined to the repo. Config comes
+ * off PR branches, so it gets the same traversal guard as a `code:` path.
+ */
+function resolveUsageFile(config, repoRoot) {
+    return config.usageFile === null
+        ? null
+        : (0, config_1.resolveRepoPath)(repoRoot, config.usageFile, 'current', 'usage');
 }
 
 
@@ -36125,7 +37367,7 @@ function renderComment(report, baseScore, baseRef) {
     const q = report.quadrantCounts;
     const lines = [exports.CURRENT_MARKER, '## Current — component health', ''];
     if (report.components.length === 0) {
-        lines.push('No components are mapped in `.current.yml`.');
+        lines.push('No components are mapped under `current.components` in `.polder.yml`.');
         return lines.join('\n');
     }
     const delta = baseScore !== null && t.overall !== null
@@ -36136,12 +37378,43 @@ function renderComment(report, baseScore, baseRef) {
     lines.push('| | Code | Design | Docs |');
     lines.push('| --- | ---: | ---: | ---: |');
     lines.push(`| Score | ${fmt(t.code)} | ${fmt(t.design)} | ${fmt(t.documentation)} |`);
+    // Say what each figure was computed over when it was not every component.
+    // A documentation score averaged over one of three components is a claim
+    // about that one component, and a number on its own cannot admit that.
+    const partial = (0, current_core_1.axesNotFullyCovered)(report);
+    if (partial.length > 0) {
+        lines.push('');
+        lines.push(partial
+            .map((b) => `${b.category === 'documentation' ? 'Docs' : b.category} over ${b.contributing} of ` +
+            `${b.total} components${b.excluded > 0 ? ` (${b.excluded} too thin to count)` : ''}`)
+            .join(' · '));
+    }
     lines.push('');
     lines.push(`${q.healthy} ${current_core_1.QUADRANT_LABELS.healthy.toLowerCase()} · ` +
         `${q.moderate} ${current_core_1.QUADRANT_LABELS.moderate.toLowerCase()} · ` +
         `${q.monitor} ${current_core_1.QUADRANT_LABELS.monitor.toLowerCase()} · ` +
         `${q.critical} ${current_core_1.QUADRANT_LABELS.critical.toLowerCase()}` +
         (q.unplotted > 0 ? ` · ${q.unplotted} not plotted` : ''));
+    // Ranked by use, so a broken Button outranks a broken Divider. Names come
+    // from the repo's own config, never from the usage file, which a fork's PR
+    // controls.
+    if (report.usage !== null) {
+        const first = (0, current_core_1.fixFirst)(report);
+        lines.push('');
+        if (first.length === 0) {
+            lines.push('**Fix first:** nothing in use is below the threshold.');
+        }
+        else {
+            lines.push('**Fix first** (weakest of code/design, weighted by use)');
+            lines.push('');
+            lines.push('| Component | Weakest | Uses | Priority |');
+            lines.push('| --- | ---: | ---: | ---: |');
+            for (const e of first) {
+                lines.push(`| \`${e.name}\` | ${e.axis} ${e.score.toFixed(1)}% | ${e.uses}` +
+                    `${e.share === null ? '' : ` (${e.share.toFixed(1)}%)`} | ${e.priority.toFixed(1)} |`);
+            }
+        }
+    }
     const attention = report.components.filter((c) => c.quadrant === 'critical');
     if (attention.length > 0) {
         lines.push('');
@@ -36155,6 +37428,153 @@ function renderComment(report, baseScore, baseRef) {
     lines.push('<sub>[Current](https://github.com/usepolder/current) · ' +
         'score is Yes ÷ (Yes + No) per category, N/A excluded</sub>');
     return lines.join('\n');
+}
+
+
+/***/ }),
+
+/***/ 2565:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.BrowserSetupError = exports.PLAYWRIGHT_CORE_VERSION = void 0;
+exports.defaultDeps = defaultDeps;
+exports.createBrowserLoader = createBrowserLoader;
+exports.createActionRenderer = createActionRenderer;
+const child_process_1 = __nccwpck_require__(5317);
+const fs = __importStar(__nccwpck_require__(9896));
+const module_1 = __nccwpck_require__(3339);
+const os = __importStar(__nccwpck_require__(857));
+const path = __importStar(__nccwpck_require__(6928));
+const util_1 = __nccwpck_require__(9023);
+const current_core_1 = __nccwpck_require__(931);
+/**
+ * Exact, not a range: this is fetched from npm at run time on the user's
+ * runner, so the version that is fetched is the version that was reviewed.
+ */
+exports.PLAYWRIGHT_CORE_VERSION = '1.63.0';
+const execFileAsync = (0, util_1.promisify)(child_process_1.execFile);
+class BrowserSetupError extends current_core_1.CurrentError {
+}
+exports.BrowserSetupError = BrowserSetupError;
+function defaultDeps(warn) {
+    return {
+        dir: path.join(process.env.RUNNER_TEMP ?? os.tmpdir(), 'current-playwright'),
+        run: async (cmd, args) => {
+            try {
+                await execFileAsync(cmd, args, { maxBuffer: 10 * 1024 * 1024 });
+            }
+            catch (err) {
+                const e = err;
+                throw new Error((e.stderr ?? '').trim().split('\n').slice(-3).join(' | ') || e.message);
+            }
+        },
+        // createRequire, not `require(path)`: ncc rewrites the latter into a
+        // bundle lookup that cannot see a package installed after the build.
+        requireFrom: (dir, id) => (0, module_1.createRequire)(path.join(dir, 'noop.js'))(id),
+        exists: fs.existsSync,
+        warn,
+    };
+}
+/**
+ * Get a browser driver onto the runner and hand back something shaped like the
+ * `playwright` module.
+ *
+ * The bundled Action cannot carry Playwright (it is external to ncc), and
+ * requiring it for every user would put a download on runs that never look at
+ * a hosted page. So it is fetched here, the first time a URL-mapped docs page
+ * needs it: `playwright-core` alone, which is a couple of megabytes and
+ * downloads no browser. For the browser it prefers the Chrome that GitHub's
+ * runner images already ship, and only downloads Chromium when that is absent.
+ */
+function createBrowserLoader(deps) {
+    return async () => {
+        const pkg = path.join(deps.dir, 'node_modules', 'playwright-core', 'package.json');
+        if (!deps.exists(pkg)) {
+            deps.warn(`Current: installing playwright-core@${exports.PLAYWRIGHT_CORE_VERSION} to render hosted docs`);
+            try {
+                await deps.run('npm', [
+                    'install',
+                    '--prefix',
+                    deps.dir,
+                    `playwright-core@${exports.PLAYWRIGHT_CORE_VERSION}`,
+                    '--no-audit',
+                    '--no-fund',
+                    '--ignore-scripts',
+                    '--loglevel=error',
+                ]);
+            }
+            catch (err) {
+                throw new BrowserSetupError(`could not install playwright-core on the runner (${err.message}), so hosted docs were not read`);
+            }
+        }
+        const mod = deps.requireFrom(deps.dir, 'playwright-core');
+        if (mod.chromium === undefined) {
+            throw new BrowserSetupError('the installed playwright-core has no chromium driver');
+        }
+        const chromium = mod.chromium;
+        return {
+            chromium: {
+                launch: async (opts) => {
+                    try {
+                        return await chromium.launch({ ...opts, channel: 'chrome' });
+                    }
+                    catch {
+                        // No system Chrome (a self-hosted runner, typically): download Chromium.
+                    }
+                    try {
+                        await deps.run('node', [
+                            path.join(deps.dir, 'node_modules', 'playwright-core', 'cli.js'),
+                            'install',
+                            'chromium',
+                        ]);
+                        return await chromium.launch(opts);
+                    }
+                    catch (err) {
+                        throw new BrowserSetupError(`no Chrome on the runner and Chromium could not be installed (${err.message}), so hosted docs were not read`);
+                    }
+                },
+            },
+        };
+    };
+}
+function createActionRenderer(logger, deps) {
+    return (0, current_core_1.createPlaywrightRenderer)({ logger, load: createBrowserLoader(deps) });
 }
 
 
@@ -36209,7 +37629,9 @@ const current_core_1 = __nccwpck_require__(931);
 const badge_1 = __nccwpck_require__(1412);
 const comment_1 = __nccwpck_require__(2362);
 const mode_1 = __nccwpck_require__(2060);
-const CONFIG_FILE = '.current.yml';
+const docs_runtime_1 = __nccwpck_require__(2565);
+const persist_1 = __nccwpck_require__(9587);
+const CONFIG_FILE = '.polder.yml';
 const ANSWERS_FILE = '.current.answers.yml';
 function readIfExists(file) {
     return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
@@ -36256,19 +37678,37 @@ async function run() {
     const rawConfig = readIfExists(path.join(workdir, CONFIG_FILE));
     if (rawConfig === null) {
         core.setFailed(`Current: no ${CONFIG_FILE} found in ${workdir}. ` +
-            'Create one with a components: block mapping each component to its code path and Figma node id.');
+            'Current shares this file with Drift and Reach — add a `current:` block with your components.');
         return;
     }
     const config = (0, current_core_1.parseConfig)(rawConfig, CONFIG_FILE);
     const rawAnswers = readIfExists(path.join(workdir, ANSWERS_FILE));
     const answers = rawAnswers === null ? new Map() : (0, current_core_1.parseAnswers)(rawAnswers, ANSWERS_FILE);
-    const report = await (0, current_core_1.scanRepo)({
-        repoRoot: workdir,
-        config,
-        answers,
-        figma: buildFigmaClient(config, verbose),
-        logger: (0, current_core_1.createLogger)(verbose, (line) => core.debug(line)),
-    });
+    // Only a URL-mapped docs page needs a browser; a repo without one never
+    // triggers the on-demand install.
+    const logger = (0, current_core_1.createLogger)(verbose, (line) => core.debug(line));
+    const renderDocs = config.components.some((c) => c.docs !== null && (0, current_core_1.isDocsUrl)(c.docs))
+        ? (0, docs_runtime_1.createActionRenderer)(logger, (0, docs_runtime_1.defaultDeps)((m) => core.warning(m)))
+        : null;
+    const usageFile = (0, current_core_1.resolveUsageFile)(config, workdir);
+    const usage = usageFile === null ? null : (0, current_core_1.loadUsage)(usageFile);
+    if (usage !== null)
+        logger.trace(`usage: ${usage.size} component(s) from ${usageFile}`);
+    let report;
+    try {
+        report = await (0, current_core_1.scanRepo)({
+            repoRoot: workdir,
+            config,
+            answers,
+            usage,
+            figma: buildFigmaClient(config, verbose),
+            renderDocs,
+            logger,
+        });
+    }
+    finally {
+        await (0, current_core_1.closeRenderer)(renderDocs);
+    }
     const t = report.totals;
     core.info(`Current: overall ${t.overall === null ? '—' : `${t.overall.toFixed(1)}%`} ` +
         `(code ${t.code ?? '—'}, design ${t.design ?? '—'}, docs ${t.documentation ?? '—'}) ` +
@@ -36290,7 +37730,7 @@ async function run() {
     const previous = (0, current_core_1.lastEntry)((0, current_core_1.readHistory)(workdir));
     const baseScore = previous?.overall ?? null;
     if (previous !== null && previous.metricsHash !== undefined) {
-        const currentHash = (0, current_core_1.entryFromReport)(report, config.metrics.map((m) => m.id)).metricsHash;
+        const currentHash = (0, current_core_1.entryFromReport)(report, (0, current_core_1.metricKeys)(config.metrics)).metricsHash;
         if (previous.metricsHash !== currentHash) {
             core.warning('Current: the metric set changed since the last recorded scan, so the delta compares ' +
                 'two different rubrics. Treat it as a reset, not a regression.');
@@ -36309,10 +37749,36 @@ async function run() {
         core.info('Current: PR comment upserted');
     }
     if ((0, mode_1.writesHistory)(mode)) {
-        (0, current_core_1.appendHistory)(workdir, (0, current_core_1.entryFromReport)(report, config.metrics.map((m) => m.id), github.context.sha));
-        const files = updateBadge(workdir, report);
+        (0, current_core_1.appendHistory)(workdir, (0, current_core_1.entryFromReport)(report, (0, current_core_1.metricKeys)(config.metrics), github.context.sha));
+        const files = [...updateBadge(workdir, report), path.join(current_core_1.HISTORY_DIR, current_core_1.HISTORY_FILE)];
         core.info(`Current: history entry appended, badge refreshed (${files.join(', ')})`);
         core.setOutput('changed-files', files.join('\n'));
+        // Everything above happened in the runner's checkout, which is thrown away
+        // when the job ends. Without this the badge never appears, the trend log
+        // stays empty and every PR delta reads "first run".
+        const branch = github.context.ref.replace(/^refs\/heads\//, '');
+        const outcome = (0, persist_1.commitAndPush)({
+            cwd: workdir,
+            files,
+            branch,
+            message: `chore: update Current score to ${(0, badge_1.badgeMessage)(report)} [skip ci]`,
+        });
+        switch (outcome.kind) {
+            case 'pushed':
+                core.info(`Current: committed and pushed to ${branch}`);
+                break;
+            case 'unchanged':
+                core.info('Current: nothing to commit');
+                break;
+            case 'failed':
+                // A warning, not a failure: the score is valid and the PR delta does
+                // not depend on this run. But it must be loud, because a badge that
+                // silently never updates is the bug this step exists to fix.
+                core.warning(`Current: could not save the badge and history to ${branch} (${outcome.step}: ${outcome.detail}). ` +
+                    'Check that the workflow has `permissions: contents: write`, that actions/checkout kept its ' +
+                    'credentials, and that branch protection allows github-actions[bot] to push.');
+                break;
+        }
     }
     if (config.failUnder > 0 && t.overall !== null && t.overall < config.failUnder) {
         core.setFailed(`Overall score ${t.overall.toFixed(1)}% is below fail_under (${config.failUnder}%)`);
@@ -36350,6 +37816,81 @@ function writesHistory(mode) {
 }
 function writesComment(mode) {
     return mode === 'pull-request';
+}
+
+
+/***/ }),
+
+/***/ 9587:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.runGit = void 0;
+exports.commitAndPush = commitAndPush;
+const child_process_1 = __nccwpck_require__(5317);
+const runGit = (args, cwd) => {
+    const r = (0, child_process_1.spawnSync)('git', args, { cwd, encoding: 'utf8' });
+    return {
+        status: r.status ?? 1,
+        stdout: r.stdout ?? '',
+        stderr: r.error ? String(r.error.message) : (r.stderr ?? ''),
+    };
+};
+exports.runGit = runGit;
+/** The identity GitHub itself uses for its Actions bot. */
+const BOT = ['-c', 'user.name=github-actions[bot]', '-c', 'user.email=41898282+github-actions[bot]@users.noreply.github.com'];
+const PUSH_ATTEMPTS = 3;
+/** Git's wording when the remote branch has commits we lack — the only rejection a rebase can fix. */
+const MOVED = /non-fast-forward|fetch first|tip of your current branch is behind/;
+function fail(step, r) {
+    // Keep every line: with a protected branch the reason is a `remote:` line
+    // near the top, and the last lines are only git's generic "failed to push".
+    const lines = (r.stderr || r.stdout).split('\n').map((l) => l.trim()).filter((l) => l !== '');
+    return { kind: 'failed', step, detail: lines.join(' | ').slice(0, 800) };
+}
+/**
+ * Commit the given files and push them to `branch`.
+ *
+ * The Action writes the badge and history into the checkout; without this step
+ * they die with the runner. Only the named files are committed, so a workflow
+ * that left other changes in the tree is not swept into a bot commit.
+ *
+ * If the push is rejected because the branch moved while the scan ran, rebase
+ * onto it and try again. It gives up rather than forcing: a rebase conflict in
+ * history.jsonl means two writers raced, and picking a winner would silently
+ * drop a trend point.
+ */
+function commitAndPush(opts) {
+    const git = opts.git ?? exports.runGit;
+    const { cwd, files, branch } = opts;
+    const add = git(['add', '--', ...files], cwd);
+    if (add.status !== 0)
+        return fail('git add', add);
+    const pending = git(['status', '--porcelain', '--', ...files], cwd);
+    if (pending.status !== 0)
+        return fail('git status', pending);
+    if (pending.stdout.trim() === '')
+        return { kind: 'unchanged' };
+    const commit = git([...BOT, 'commit', '-m', opts.message, '--', ...files], cwd);
+    if (commit.status !== 0)
+        return fail('git commit', commit);
+    const target = `HEAD:refs/heads/${branch}`;
+    let lastPush = null;
+    for (let attempt = 1; attempt <= PUSH_ATTEMPTS; attempt += 1) {
+        lastPush = git(['push', 'origin', target], cwd);
+        if (lastPush.status === 0)
+            return { kind: 'pushed', attempts: attempt };
+        if (attempt === PUSH_ATTEMPTS || !MOVED.test(lastPush.stderr))
+            break;
+        const rebase = git([...BOT, 'pull', '--rebase', '--autostash', 'origin', branch], cwd);
+        if (rebase.status !== 0) {
+            git(['rebase', '--abort'], cwd);
+            return fail('git pull --rebase', rebase);
+        }
+    }
+    return fail('git push', lastPush);
 }
 
 
@@ -36451,6 +37992,14 @@ module.exports = require("https");
 
 /***/ }),
 
+/***/ 3339:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("module");
+
+/***/ }),
+
 /***/ 9278:
 /***/ ((module) => {
 
@@ -36512,6 +38061,14 @@ module.exports = require("path");
 
 "use strict";
 module.exports = require("perf_hooks");
+
+/***/ }),
+
+/***/ 9336:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("playwright");
 
 /***/ }),
 

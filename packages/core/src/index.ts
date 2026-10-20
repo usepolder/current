@@ -10,6 +10,7 @@ export {
   DEFAULT_METRICS,
   DEFAULT_METRICS_BY_ID,
   CATEGORIES,
+  metricKeys,
   type Answer,
   type MetricCategory,
   type MetricDef,
@@ -26,11 +27,15 @@ export {
 } from './config';
 export { parseAnswers, coerceAnswer, lookupAnswer, type AnswerBook } from './answers';
 export { parseSource, BABEL_OPTIONS, type Ast } from './parse';
+export { collectRelatedFiles, type RelatedFile, type RelatedFiles } from './related-files';
 export { createLogger, silentLogger, type Logger } from './logger';
 export {
   scoreAnswers,
   quadrantFor,
   averageScore,
+  averageConfidentScore,
+  weakestAxis,
+  usagePriority,
   round1,
   QUADRANT_LABELS,
   type AxisScore,
@@ -39,6 +44,7 @@ export {
 export {
   CODE_CHECKS,
   collectCodePropNames,
+  type CodeCheck,
   normalisePropName,
   type CheckResult,
   type CodeFacts,
@@ -49,7 +55,22 @@ export {
   flatten,
   type DesignFacts,
 } from './figma-checks';
-export { checkDocSection, extractHeadings, type DocsFacts } from './docs-checks';
+export {
+  checkDocSection,
+  extractHeadings,
+  extractHtmlHeadings,
+  headingMatches,
+  type DocsFacts,
+} from './docs-checks';
+export {
+  isDocsUrl,
+  createPlaywrightRenderer,
+  closeRenderer,
+  RendererUnavailableError,
+  RENDERER_INSTALL_HINT,
+  type PageRenderer,
+  type RendererOptions,
+} from './docs-source';
 export {
   FigmaClient,
   collectComponents,
@@ -62,12 +83,24 @@ export {
 export {
   SCHEMA_VERSION,
   countQuadrants,
+  axesNotFullyCovered,
+  fixFirst,
   metricsForCategory,
   type AnswerSource,
+  type AxisBasis,
   type ComponentResult,
   type CurrentReport,
   type MetricResult,
+  type UsageBasis,
+  type FixFirstEntry,
 } from './report';
+export {
+  parseReachUsage,
+  loadUsage,
+  resolveUsageFile,
+  MIN_REACH_SCHEMA,
+  type UsageMap,
+} from './usage';
 export { scanRepo, type ScanOptions } from './scan';
 export {
   appendHistory,

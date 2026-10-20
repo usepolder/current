@@ -5,11 +5,17 @@ import {
   FigmaClient,
   TOKEN_ENV_VAR,
   appendHistory,
+  closeRenderer,
   createLogger,
+  createPlaywrightRenderer,
   entryFromReport,
+  isDocsUrl,
+  loadUsage,
+  metricKeys,
   parseAnswers,
   parseConfig,
   readHistory,
+  resolveUsageFile,
   scanRepo,
   type AnswerBook,
   type CurrentConfig,
@@ -19,7 +25,7 @@ import { figmaList } from './figma-list';
 import { renderReport } from './render';
 import { renderTerminal } from './terminal';
 
-export const CONFIG_FILE = '.current.yml';
+export const CONFIG_FILE = '.polder.yml';
 export const ANSWERS_FILE = '.current.answers.yml';
 export const DEFAULT_REPORT_FILE = 'current-report.html';
 
@@ -29,6 +35,7 @@ export interface CliArgs {
   json: boolean;
   verbose: boolean;
   out: string | null;
+  usage: string | null;
   noReport: boolean;
   recordHistory: boolean;
 }
@@ -40,6 +47,7 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     json: false,
     verbose: false,
     out: null,
+    usage: null,
     noReport: false,
     recordHistory: false,
   };
@@ -65,6 +73,11 @@ export function parseArgs(argv: readonly string[]): CliArgs {
       if (value === undefined) throw new CurrentError('--out requires a file path');
       args.out = value;
       i += 1;
+    } else if (a === '--usage') {
+      const value = rest[i + 1];
+      if (value === undefined) throw new CurrentError('--usage requires a Reach JSON report path');
+      args.usage = value;
+      i += 1;
     } else if (a.startsWith('-')) {
       throw new CurrentError(`Unknown flag: ${a}`);
     } else {
@@ -84,6 +97,8 @@ Usage
 Options
   --json             Print the full report as JSON instead of a summary
   --out <file>       Where to write the HTML report (default ${DEFAULT_REPORT_FILE})
+  --usage <file>     Reach JSON report; ranks what to fix first by how much each component is used
+                     (or set \`usage:\` under \`current:\` in ${CONFIG_FILE})
   --no-report        Skip writing the HTML report
   --record-history   Append this run's scores to .current/history.jsonl
   --verbose, -v      Trace every metric's resolution to stderr
@@ -91,8 +106,8 @@ Options
   --version          Print the version
 
 Setup
-  1. Create ${CONFIG_FILE} with a components: block mapping each component
-     to its code path and Figma node id.
+  1. Create ${CONFIG_FILE} with a current: block mapping each component
+     to its code path and Figma node id. Shared with Drift and Reach.
   2. export ${TOKEN_ENV_VAR}=<your Figma personal access token>
   3. Run \`current figma list\` to get node ids for the mapping.
 
@@ -109,14 +124,16 @@ export function loadConfig(dir: string): { config: CurrentConfig; configPath: st
   if (raw === null) {
     throw new CurrentError(
       `No ${CONFIG_FILE} found in ${dir}.\n` +
-        'Create one with a components: block, for example:\n\n' +
-        '  figma:\n' +
-        '    file_key: "your-figma-file-key"\n' +
-        '  components:\n' +
-        '    Button:\n' +
-        '      code: "src/components/Button/Button.tsx"\n' +
-        '      figma: "12:345"\n' +
-        '      docs: "docs/button.mdx"\n',
+        'Current shares this file with Polder Drift and Reach. Create one with a\n' +
+        '`current:` block, for example:\n\n' +
+        '  current:\n' +
+        '    figma:\n' +
+        '      file_key: "your-figma-file-key"\n' +
+        '    components:\n' +
+        '      Button:\n' +
+        '        code: "src/components/Button/Button.tsx"\n' +
+        '        figma: "12:345"\n' +
+        '        docs: "docs/button.mdx"\n',
     );
   }
   return { config: parseConfig(raw, CONFIG_FILE), configPath };
@@ -198,19 +215,35 @@ export async function run(argv: readonly string[], io: RunIo): Promise<number> {
 
     const answers = loadAnswers(dir);
     const figma = buildFigmaClient(config, args.verbose, io.env);
+    // Only spin up a renderer if some component actually points at a URL.
+    const needsRenderer = config.components.some((c) => c.docs !== null && isDocsUrl(c.docs));
+    const renderDocs = needsRenderer ? createPlaywrightRenderer({ logger }) : null;
     if (figma === null && config.figmaFileKey !== null) {
       logger.trace(`$${TOKEN_ENV_VAR} not set — design metrics will report as unavailable`);
     }
 
-    const report = await scanRepo({ repoRoot: dir, config, answers, figma, logger });
+    // An explicit --usage is relative to where the user is standing, like
+    // --out. The config's `usage:` is repo-relative and traversal-guarded.
+    const usageFile =
+      args.usage !== null
+        ? path.resolve(io.cwd ?? process.cwd(), args.usage)
+        : resolveUsageFile(config, dir);
+    const usage = usageFile === null ? null : loadUsage(usageFile);
+    if (usage !== null) logger.trace(`usage: ${usage.size} component(s) from ${usageFile}`);
+
+    let report;
+    try {
+      report = await scanRepo({ repoRoot: dir, config, answers, figma, renderDocs, usage, logger });
+    } finally {
+      // Always shut the browser down, including on a failed scan, so a crash
+      // never strands a headless chromium on the user's machine.
+      await closeRenderer(renderDocs);
+    }
 
     if (args.recordHistory) {
       appendHistory(
         dir,
-        entryFromReport(
-          report,
-          config.metrics.map((m) => m.id),
-        ),
+        entryFromReport(report, metricKeys(config.metrics)),
       );
       logger.trace('history: appended one entry to .current/history.jsonl');
     }

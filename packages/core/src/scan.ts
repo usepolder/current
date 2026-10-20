@@ -3,13 +3,15 @@ import * as path from 'path';
 import { lookupAnswer, type AnswerBook } from './answers';
 import { CODE_CHECKS, type CheckResult, type CodeFacts } from './code-checks';
 import { resolveComponentPaths, type CurrentConfig } from './config';
-import { checkDocSection } from './docs-checks';
+import { checkDocSection, extractHeadings, extractHtmlHeadings, type DocsFacts } from './docs-checks';
+import { isDocsUrl, type PageRenderer } from './docs-source';
 import { FigmaError, NoComponentsError } from './errors';
 import { DESIGN_CHECKS, figmaPropertyNames, type DesignFacts } from './figma-checks';
 import type { FigmaClient, FigmaNode } from './figma-client';
 import { silentLogger, type Logger } from './logger';
 import { CATEGORIES, type Answer, type MetricCategory } from './metrics';
 import { parseSource, type Ast } from './parse';
+import { collectRelatedFiles, type RelatedFiles } from './related-files';
 import {
   countQuadrants,
   metricsForCategory,
@@ -17,8 +19,17 @@ import {
   type ComponentResult,
   type CurrentReport,
   type MetricResult,
+  type UsageBasis,
 } from './report';
-import { averageScore, quadrantFor, scoreAnswers, type AxisScore } from './score';
+import {
+  averageConfidentScore,
+  averageScore,
+  quadrantFor,
+  scoreAnswers,
+  usagePriority,
+  type AxisScore,
+} from './score';
+import type { UsageMap } from './usage';
 
 /**
  * Evidence marker for a design check that could not run because Figma was
@@ -34,6 +45,16 @@ export interface ScanOptions {
   /** Omit to produce a code-and-docs-only report. */
   figma?: FigmaClient | null;
   logger?: Logger;
+  /**
+   * Renders a hosted docs URL to HTML. Omit it and URL-mapped docs report as
+   * N/A with an install hint rather than being scored wrong.
+   */
+  renderDocs?: PageRenderer | null;
+  /**
+   * Per-component usage from a Reach report. Omit it and the report carries no
+   * priority — nothing is weighted by a guess.
+   */
+  usage?: UsageMap | null;
   now?: () => Date;
 }
 
@@ -43,7 +64,12 @@ interface LoadedComponent {
   docsPath: string | null;
   source: string | null;
   ast: Ast | null;
-  docsSource: string | null;
+  /** Styles and sub-modules the entry file imports from its own directory. */
+  related: RelatedFiles | null;
+  /** Headings found in the docs, or null when there were none to read. */
+  docsHeadings: string[] | null;
+  docsAbsence: DocsFacts['absence'];
+  docsAbsenceDetail?: string;
   figmaNode: FigmaNode | null;
 }
 
@@ -60,7 +86,7 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
   const { config, repoRoot, answers } = opts;
 
   if (config.components.length === 0) {
-    throw new NoComponentsError('.current.yml');
+    throw new NoComponentsError('.polder.yml');
   }
 
   // Throws on any path escaping the repo root, before a single file is read.
@@ -88,42 +114,53 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
     figmaUnavailable = `No Figma token provided; design metrics were not evaluated.`;
   }
 
-  const loaded: LoadedComponent[] = config.components.map((mapping) => {
+  const loaded: LoadedComponent[] = [];
+  for (const mapping of config.components) {
     const paths = resolvedPaths.get(mapping.name)!;
     let source: string | null = null;
     let ast: Ast | null = null;
+    let related: RelatedFiles | null = null;
     if (paths.code !== null && fs.existsSync(paths.code)) {
       source = fs.readFileSync(paths.code, 'utf8');
       ast = parseSource(source, path.relative(repoRoot, paths.code));
       logger.trace(`${mapping.name}: parsed ${path.relative(repoRoot, paths.code)}`);
+      // Another component's entry file is never this component's.
+      const others = new Set<string>();
+      for (const [name, p] of resolvedPaths) {
+        if (name !== mapping.name && p.code !== null) others.add(path.resolve(p.code));
+      }
+      related = collectRelatedFiles(paths.code, ast, repoRoot, others);
+      logger.trace(
+        `${mapping.name}: ${related.files.length} related file(s)` +
+          (related.files.length > 0 ? ` — ${related.files.map((f) => f.filePath).join(', ')}` : ''),
+      );
     } else if (paths.code !== null) {
       logger.trace(`${mapping.name}: code file missing at ${mapping.code}`);
     }
 
-    let docsSource: string | null = null;
-    if (paths.docs !== null && fs.existsSync(paths.docs)) {
-      docsSource = fs.readFileSync(paths.docs, 'utf8');
-    } else if (paths.docs !== null) {
-      logger.trace(`${mapping.name}: docs file missing at ${mapping.docs}`);
-    }
+    const docs = await loadDocs(mapping.name, paths.docs, opts, logger);
 
-    return {
+    loaded.push({
       name: mapping.name,
       codePath: mapping.code,
       docsPath: mapping.docs,
       source,
       ast,
-      docsSource,
+      related,
+      docsHeadings: docs.headings,
+      docsAbsence: docs.absence,
+      docsAbsenceDetail: docs.detail,
       figmaNode: mapping.figma === null ? null : figmaNodes.get(mapping.figma) ?? null,
-    };
-  });
+    });
+  }
 
-  const components = loaded.map((c, i) =>
+  const scored = loaded.map((c, i) =>
     scoreComponent(c, config, answers, logger, {
       figmaMapped: config.components[i].figma !== null,
       figmaUnavailable: figmaUnavailable !== null,
     }),
   );
+  const { components, usage } = applyUsage(scored, opts.usage ?? null);
 
   // Figma being unreachable is only worth warning about if it actually cost
   // a score. When every design metric was answered by a human, it did not,
@@ -136,15 +173,27 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
     figmaUnavailable = null;
   }
 
+  const code = averageConfidentScore(components.map((c) => c.scores.code));
+  const design = averageConfidentScore(components.map((c) => c.scores.design));
+  const documentation = averageConfidentScore(components.map((c) => c.scores.documentation));
+
   const totals = {
-    code: averageScore(components.map((c) => c.scores.code.score)),
-    design: averageScore(components.map((c) => c.scores.design.score)),
-    documentation: averageScore(components.map((c) => c.scores.documentation.score)),
-    overall: null as number | null,
+    code: code.score,
+    design: design.score,
+    documentation: documentation.score,
+    overall: averageScore([code.score, design.score, documentation.score]),
     componentsScored: components.filter((c) => c.quadrant !== null).length,
     componentsNotPlotted: components.filter((c) => c.quadrant === null).length,
+    /** Per-axis component counts behind each total, and how many were too thin to count. */
+    basis: {
+      code: { contributing: code.contributing, excluded: code.excluded },
+      design: { contributing: design.contributing, excluded: design.excluded },
+      documentation: {
+        contributing: documentation.contributing,
+        excluded: documentation.excluded,
+      },
+    },
   };
-  totals.overall = averageScore([totals.code, totals.design, totals.documentation]);
 
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -153,9 +202,98 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
     minConfidence: config.minConfidence,
     figmaUnavailable,
     components,
+    usage,
     totals,
     quadrantCounts: countQuadrants(components),
   };
+}
+
+/**
+ * Attach usage and priority. A mapped component Reach never saw is used zero
+ * times, not unknown: the data exists, and it says nobody renders it.
+ *
+ * The priority scale is the busiest of *these* components, so a repo whose
+ * heaviest DS component is not scored by Current still gets a 0-100 ranking
+ * among the ones that are.
+ */
+function applyUsage(
+  components: ComponentResult[],
+  usage: UsageMap | null,
+): { components: ComponentResult[]; usage: UsageBasis | null } {
+  if (usage === null) return { components, usage: null };
+
+  const uses = components.map((c) => usage.get(c.name) ?? 0);
+  const maxUses = Math.max(0, ...uses);
+  const mapped = new Set(components.map((c) => c.name));
+
+  return {
+    components: components.map((c, i) => ({
+      ...c,
+      usage: uses[i],
+      priority: usagePriority(c.scores.code.score, c.scores.design.score, uses[i], maxUses),
+    })),
+    usage: {
+      totalUses: [...usage.values()].reduce((a, b) => a + b, 0),
+      unmatched: [...usage]
+        .filter(([name]) => !mapped.has(name))
+        .map(([name, n]) => ({ name, uses: n }))
+        .sort((a, b) => b.uses - a.uses || (a.name < b.name ? -1 : 1)),
+    },
+  };
+}
+
+/**
+ * Read a component's documentation, from a repo file or a hosted page.
+ *
+ * A URL that cannot be rendered is N/A, never No: "we could not look" and
+ * "we looked and it is not documented" are different answers, and conflating
+ * them would mark a well-documented system as undocumented the moment a
+ * renderer is missing or a site is down.
+ */
+async function loadDocs(
+  component: string,
+  docs: string | null,
+  opts: ScanOptions,
+  logger: Logger,
+): Promise<{ headings: string[] | null; absence: DocsFacts['absence']; detail?: string }> {
+  if (docs === null) return { headings: null, absence: 'unmapped' };
+
+  if (!isDocsUrl(docs)) {
+    if (!fs.existsSync(docs)) {
+      logger.trace(`${component}: docs file missing at ${docs}`);
+      return { headings: null, absence: 'missing' };
+    }
+    const headings = extractHeadings(fs.readFileSync(docs, 'utf8'));
+    logger.trace(`${component}: ${headings.length} heading(s) from the docs file`);
+    return { headings, absence: null };
+  }
+
+  if (opts.renderDocs === undefined || opts.renderDocs === null) {
+    logger.trace(`${component}: docs are a URL but no renderer was provided`);
+    return { headings: null, absence: 'no-renderer' };
+  }
+
+  try {
+    const html = await opts.renderDocs(docs);
+    const headings = extractHtmlHeadings(html);
+    if (headings.length === 0) {
+      // A hosted docs page with no headings at all is far more likely to be
+      // an incomplete render than a real page documenting nothing. Treat it
+      // as unread rather than scoring the component as undocumented.
+      logger.trace(`${component}: ${docs} returned no headings — treating as unread`);
+      return {
+        headings: null,
+        absence: 'unreadable',
+        detail: 'page returned no headings; it may not have finished rendering',
+      };
+    }
+    logger.trace(`${component}: ${headings.length} heading(s) from ${docs}`);
+    return { headings, absence: null };
+  } catch (err) {
+    const detail = (err as Error).message.split('\n')[0];
+    logger.trace(`${component}: docs page failed — ${detail}`);
+    return { headings: null, absence: 'unreadable', detail };
+  }
 }
 
 function scoreComponent(
@@ -176,6 +314,7 @@ function scoreComponent(
           source: c.source ?? '',
           ast: c.ast,
           figmaPropertyNames: c.figmaNode === null ? null : figmaPropertyNames(c.figmaNode),
+          ...(c.related === null ? {} : { related: c.related }),
         };
 
   const designFacts: DesignFacts | null =
@@ -270,10 +409,12 @@ function scoreComponent(
           : c.figmaNode === null
             ? 'missing'
             : 'present',
-      docs: c.docsPath === null ? 'unmapped' : c.docsSource === null ? 'missing' : 'present',
+      docs: c.docsPath === null ? 'unmapped' : c.docsHeadings === null ? 'missing' : 'present',
     },
     scores,
     quadrant: quadrantFor(scores.code.score, scores.design.score, config.threshold),
+    usage: null,
+    priority: null,
     metrics: results,
   };
 }
@@ -300,7 +441,7 @@ function runCheck(
     }
     const fn = CODE_CHECKS[checkId];
     if (!fn) return { answer: 'N/A', evidence: `unknown check "${checkId}"` };
-    return fn(args.codeFacts);
+    return fn(args.codeFacts, params);
   }
 
   if (checkId.startsWith('design.')) {
@@ -319,12 +460,12 @@ function runCheck(
   }
 
   if (checkId === 'docs.section') {
-    const headings = (params?.headings as string[] | undefined) ?? [];
     return checkDocSection({
       componentName: args.component.name,
-      source: args.component.docsSource,
-      missing: args.component.docsPath !== null && args.component.docsSource === null,
-      headings,
+      headings: args.component.docsHeadings,
+      absence: args.component.docsAbsence,
+      absenceDetail: args.component.docsAbsenceDetail,
+      wanted: (params?.headings as string[] | undefined) ?? [],
     });
   }
 

@@ -52,6 +52,8 @@ function component(name: string, quadrant: CurrentReport['components'][number]['
     presence: { code: 'present', figma: 'present', docs: 'present' },
     scores: {} as never,
     quadrant,
+    usage: null,
+    priority: null,
     metrics: [],
   } as CurrentReport['components'][number];
 }
@@ -63,6 +65,7 @@ function report(overrides: Partial<CurrentReport> = {}): CurrentReport {
     threshold: 60,
     minConfidence: 3,
     figmaUnavailable: null,
+    usage: null,
     components: [component('Button', 'healthy')],
     totals: {
       code: 70,
@@ -71,11 +74,52 @@ function report(overrides: Partial<CurrentReport> = {}): CurrentReport {
       overall: 70,
       componentsScored: 2,
       componentsNotPlotted: 0,
+      basis: {
+        code: { contributing: 1, excluded: 0 },
+        design: { contributing: 1, excluded: 0 },
+        documentation: { contributing: 1, excluded: 0 },
+      },
     },
     quadrantCounts: { healthy: 1, critical: 1, monitor: 0, moderate: 0, unplotted: 0 },
     ...overrides,
   };
 }
+
+describe('renderComment — fix first', () => {
+  const withUsage = (): CurrentReport => {
+    const weak = (name: string, uses: number, priority: number) =>
+      ({
+        ...component(name, 'monitor'),
+        scores: { code: { score: 30 }, design: { score: 50 }, documentation: { score: null } },
+        usage: uses,
+        priority,
+      }) as unknown as CurrentReport['components'][number];
+    return report({
+      usage: { totalUses: 500, unmatched: [{ name: '**pwn**', uses: 3 }] },
+      components: [weak('Divider', 5, 1.2), weak('Button', 400, 56)],
+    });
+  };
+
+  it('is absent without usage data', () => {
+    expect(renderComment(report(), null, null)).not.toContain('Fix first');
+  });
+
+  it('lists the most-used weak component first', () => {
+    const body = renderComment(withUsage(), null, null);
+    expect(body).toContain('**Fix first**');
+    expect(body.indexOf('`Button`')).toBeLessThan(body.indexOf('`Divider`'));
+    expect(body).toContain('| `Button` | code 30.0% | 400 (80.0%) | 56.0 |');
+  });
+
+  it('never prints names that came from the usage file', () => {
+    expect(renderComment(withUsage(), null, null)).not.toContain('pwn');
+  });
+
+  it('says so when nothing in use is below the threshold', () => {
+    const r = report({ usage: { totalUses: 10, unmatched: [] } });
+    expect(renderComment(r, null, null)).toContain('nothing in use is below the threshold');
+  });
+});
 
 describe('renderComment', () => {
   it('always includes the marker so the next run can find it', () => {
@@ -114,6 +158,53 @@ describe('renderComment', () => {
     expect(body).toContain('**Critical**');
     expect(body).toContain('`Dialog`');
     expect(body).not.toContain('`Button`');
+  });
+
+  it('says what a figure was computed over when it is not every component', () => {
+    // The bug this came from: the dogfood run posted "Docs 77.8%" on a
+    // three-component system where exactly one component had any docs.
+    const body = renderComment(
+      report({
+        components: [component('Button', 'healthy'), component('Wrapper', 'monitor'), component('Ghost', 'monitor')],
+        totals: {
+          ...report().totals,
+          basis: {
+            code: { contributing: 3, excluded: 0 },
+            design: { contributing: 3, excluded: 0 },
+            documentation: { contributing: 1, excluded: 0 },
+          },
+        },
+      }),
+      null,
+      null,
+    );
+    expect(body).toContain('Docs over 1 of 3 components');
+    expect(body).not.toContain('Code over');
+  });
+
+  it('names how many were dropped for being thin', () => {
+    const body = renderComment(
+      report({
+        components: [component('A', 'healthy'), component('B', 'healthy'), component('C', 'healthy')],
+        totals: {
+          ...report().totals,
+          basis: {
+            code: { contributing: 3, excluded: 0 },
+            design: { contributing: 3, excluded: 0 },
+            documentation: { contributing: 1, excluded: 2 },
+          },
+        },
+      }),
+      null,
+      null,
+    );
+    expect(body).toContain('(2 too thin to count)');
+  });
+
+  it('stays quiet when every figure covers every component', () => {
+    const body = renderComment(report({ components: [component('Button', 'healthy')] }), null, null);
+    expect(body).not.toContain('components (');
+    expect(body).not.toContain(' over 1 of ');
   });
 
   it('warns when the design side could not be measured', () => {

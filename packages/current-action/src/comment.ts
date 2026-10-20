@@ -1,4 +1,9 @@
-import { QUADRANT_LABELS, type CurrentReport } from '@usepolder/current-core';
+import {
+  QUADRANT_LABELS,
+  axesNotFullyCovered,
+  fixFirst,
+  type CurrentReport,
+} from '@usepolder/current-core';
 
 /** Hidden marker that makes the comment single: the upsert finds it and edits. */
 export const CURRENT_MARKER = '<!-- polder-current -->';
@@ -47,7 +52,7 @@ export function renderComment(
   const lines: string[] = [CURRENT_MARKER, '## Current — component health', ''];
 
   if (report.components.length === 0) {
-    lines.push('No components are mapped in `.current.yml`.');
+    lines.push('No components are mapped under `current.components` in `.polder.yml`.');
     return lines.join('\n');
   }
 
@@ -60,6 +65,24 @@ export function renderComment(
   lines.push('| | Code | Design | Docs |');
   lines.push('| --- | ---: | ---: | ---: |');
   lines.push(`| Score | ${fmt(t.code)} | ${fmt(t.design)} | ${fmt(t.documentation)} |`);
+
+  // Say what each figure was computed over when it was not every component.
+  // A documentation score averaged over one of three components is a claim
+  // about that one component, and a number on its own cannot admit that.
+  const partial = axesNotFullyCovered(report);
+  if (partial.length > 0) {
+    lines.push('');
+    lines.push(
+      partial
+        .map(
+          (b) =>
+            `${b.category === 'documentation' ? 'Docs' : b.category} over ${b.contributing} of ` +
+            `${b.total} components${b.excluded > 0 ? ` (${b.excluded} too thin to count)` : ''}`,
+        )
+        .join(' · '),
+    );
+  }
+
   lines.push('');
   lines.push(
     `${q.healthy} ${QUADRANT_LABELS.healthy.toLowerCase()} · ` +
@@ -68,6 +91,28 @@ export function renderComment(
       `${q.critical} ${QUADRANT_LABELS.critical.toLowerCase()}` +
       (q.unplotted > 0 ? ` · ${q.unplotted} not plotted` : ''),
   );
+
+  // Ranked by use, so a broken Button outranks a broken Divider. Names come
+  // from the repo's own config, never from the usage file, which a fork's PR
+  // controls.
+  if (report.usage !== null) {
+    const first = fixFirst(report);
+    lines.push('');
+    if (first.length === 0) {
+      lines.push('**Fix first:** nothing in use is below the threshold.');
+    } else {
+      lines.push('**Fix first** (weakest of code/design, weighted by use)');
+      lines.push('');
+      lines.push('| Component | Weakest | Uses | Priority |');
+      lines.push('| --- | ---: | ---: | ---: |');
+      for (const e of first) {
+        lines.push(
+          `| \`${e.name}\` | ${e.axis} ${e.score.toFixed(1)}% | ${e.uses}` +
+            `${e.share === null ? '' : ` (${e.share.toFixed(1)}%)`} | ${e.priority.toFixed(1)} |`,
+        );
+      }
+    }
+  }
 
   const attention = report.components.filter((c) => c.quadrant === 'critical');
   if (attention.length > 0) {

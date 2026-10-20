@@ -132,7 +132,7 @@ export class FigmaClient {
       }
       if (res.status === 404) {
         throw new FigmaError(
-          `Figma file "${this.fileKey}" not found (HTTP 404). Check figma.file_key in .current.yml.`,
+          `Figma file "${this.fileKey}" not found (HTTP 404). Check current.figma.file_key in .polder.yml.`,
           { status: 404 },
         );
       }

@@ -75,6 +75,14 @@ describe('parseArgs', () => {
     });
   });
 
+  it('parses --usage with its value', () => {
+    expect(parseArgs(['--usage', 'reach.json']).usage).toBe('reach.json');
+  });
+
+  it('rejects --usage with no value', () => {
+    expect(() => parseArgs(['--usage'])).toThrow('--usage requires');
+  });
+
   it('parses --out with its value', () => {
     expect(parseArgs(['--out', 'health.html']).out).toBe('health.html');
   });
@@ -106,7 +114,7 @@ describe('run', () => {
     temps.push(empty);
     const { code, err } = await invoke([empty]);
     expect(code).toBe(2);
-    expect(err).toContain('No .current.yml found');
+    expect(err).toContain('No .polder.yml found');
     expect(err).toContain('components:');
   });
 
@@ -169,6 +177,63 @@ describe('run', () => {
     expect(report.components.map((c: { name: string }) => c.name)).toContain('Button');
   });
 
+  describe('--usage', () => {
+    const reachReport = (usage: Record<string, number>, over: Record<string, unknown> = {}) =>
+      JSON.stringify({ schemaVersion: 2, tool: 'reach', usage, ...over });
+
+    it('ranks what to fix first by use', async () => {
+      const dir = tempCopyOfFixture();
+      fs.writeFileSync(path.join(dir, 'reach.json'), reachReport({ Button: 40, Wrapper: 300, Icon: 12 }));
+      const { code, out } = await invoke([dir, '--no-report', '--usage', path.join(dir, 'reach.json')]);
+      expect(code).toBe(0);
+      expect(out).toContain('Fix first');
+      expect(out).toMatch(/1\. Wrapper\s+\w+ [\d.]+%\s+300 uses/);
+      expect(out).toContain('In use but not mapped in .polder.yml: Icon (12)');
+    });
+
+    it('prints no ranking without usage data', async () => {
+      const { out } = await invoke([tempCopyOfFixture(), '--no-report']);
+      expect(out).not.toContain('Fix first');
+    });
+
+    it('resolves --usage against the cwd, like --out', async () => {
+      const dir = tempCopyOfFixture();
+      const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'current-cwd-'));
+      temps.push(elsewhere);
+      fs.writeFileSync(path.join(elsewhere, 'r.json'), reachReport({ Wrapper: 5 }));
+      const { code, out } = await invoke([dir, '--no-report', '--usage', 'r.json'], {}, elsewhere);
+      expect(code).toBe(0);
+      expect(out).toContain('Fix first');
+    });
+
+    it('reads `usage:` from the config, confined to the repo', async () => {
+      const dir = tempCopyOfFixture();
+      const cfgPath = path.join(dir, '.polder.yml');
+      fs.writeFileSync(cfgPath, `${fs.readFileSync(cfgPath, 'utf8')}\n  usage: "reach.json"\n`);
+      fs.writeFileSync(path.join(dir, 'reach.json'), reachReport({ Wrapper: 5 }));
+      expect((await invoke([dir, '--no-report'])).out).toContain('Fix first');
+
+      fs.writeFileSync(cfgPath, fs.readFileSync(cfgPath, 'utf8').replace('reach.json', '../reach.json'));
+      const escaped = await invoke([dir, '--no-report']);
+      expect(escaped.code).toBe(2);
+      expect(escaped.err).toContain('outside the repo root');
+    });
+
+    it('exits 2 with a clear message for a pre-usage Reach report', async () => {
+      const dir = tempCopyOfFixture();
+      fs.writeFileSync(path.join(dir, 'reach.json'), JSON.stringify({ schemaVersion: 1, tool: 'reach' }));
+      const { code, err } = await invoke([dir, '--no-report', '--usage', path.join(dir, 'reach.json')]);
+      expect(code).toBe(2);
+      expect(err).toContain('before per-component usage');
+    });
+
+    it('exits 2 when the usage file does not exist', async () => {
+      const { code, err } = await invoke([tempCopyOfFixture(), '--no-report', '--usage', '/nope/r.json']);
+      expect(code).toBe(2);
+      expect(err).toContain('Run Reach first');
+    });
+  });
+
   it('traces every metric to stderr with --verbose', async () => {
     const dir = tempCopyOfFixture();
     const { err } = await invoke([dir, '--verbose', '--no-report']);
@@ -203,10 +268,10 @@ describe('run', () => {
 
   it('reports a malformed config as a clean error, not a stack trace', async () => {
     const dir = tempCopyOfFixture();
-    fs.writeFileSync(path.join(dir, '.current.yml'), 'components:\n  Button:\n   code: "a"\n \tbad\n');
+    fs.writeFileSync(path.join(dir, '.polder.yml'), 'current:\n  components:\n    Button:\n     code: "a"\n   \tbad\n');
     const { code, err } = await invoke([dir]);
     expect(code).toBe(2);
-    expect(err).toContain('.current.yml:');
+    expect(err).toContain('.polder.yml:');
     expect(err).not.toContain('    at ');
   });
 
@@ -222,8 +287,8 @@ describe('run', () => {
   it('refuses a path that escapes the repo root', async () => {
     const dir = tempCopyOfFixture();
     fs.writeFileSync(
-      path.join(dir, '.current.yml'),
-      'components:\n  Evil:\n    code: "../../../../etc/passwd"\n',
+      path.join(dir, '.polder.yml'),
+      'current:\n  components:\n    Evil:\n      code: "../../../../etc/passwd"\n',
     );
     const { code, err } = await invoke([dir]);
     expect(code).toBe(2);
@@ -232,7 +297,7 @@ describe('run', () => {
 
   it('exits 1 when the score is below fail_under', async () => {
     const dir = tempCopyOfFixture();
-    fs.appendFileSync(path.join(dir, '.current.yml'), '\nfail_under: 99\n');
+    fs.appendFileSync(path.join(dir, '.polder.yml'), '\n  fail_under: 99\n');
     const { code, err } = await invoke([dir, '--no-report']);
     expect(code).toBe(1);
     expect(err).toContain('below fail_under');
@@ -240,7 +305,7 @@ describe('run', () => {
 
   it('exits 0 when the score clears fail_under', async () => {
     const dir = tempCopyOfFixture();
-    fs.appendFileSync(path.join(dir, '.current.yml'), '\nfail_under: 1\n');
+    fs.appendFileSync(path.join(dir, '.polder.yml'), '\n  fail_under: 1\n');
     expect((await invoke([dir, '--no-report'])).code).toBe(0);
   });
 

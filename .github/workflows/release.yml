@@ -1,5 +1,5 @@
 # Publishes on a version tag: v1.2.3 -> npm + a GitHub release.
-# The Action bundle is rebuilt and committed here so `uses: usepolder/current@v1`
+# The Action bundle is rebuilt and committed here so `uses: usepolder/current@vX.Y.Z`
 # always points at a dist/ that matches the tagged source.
 name: Release
 on:

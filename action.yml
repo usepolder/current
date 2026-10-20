@@ -11,7 +11,7 @@ inputs:
     required: true
     default: ${{ github.token }}
   working-directory:
-    description: 'Directory containing .current.yml'
+    description: 'Directory containing .polder.yml'
     required: false
     default: '.'
   verbose:

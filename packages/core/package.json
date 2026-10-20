@@ -40,5 +40,9 @@
     "@babel/parser": "^7.24.0",
     "@babel/types": "^7.24.0",
     "js-yaml": "^4.1.0"
-  }
+  },
+  "optionalDependencies": {
+    "playwright": "^1.47.0"
+  },
+  "peerDependenciesMeta": {}
 }

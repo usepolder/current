@@ -11,7 +11,13 @@ const temps: string[] = [];
 function tempCopyOfFixture(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'current-cli-'));
   temps.push(dir);
-  fs.cpSync(FIXTURE, dir, { recursive: true });
+  // Skip .current/: that directory is the Action's *output*, and a dogfood run
+  // that persisted a badge or a history entry into the fixture must not decide
+  // what these tests see on a fresh copy.
+  fs.cpSync(FIXTURE, dir, {
+    recursive: true,
+    filter: (src) => !src.split(path.sep).includes('.current'),
+  });
   return dir;
 }
 

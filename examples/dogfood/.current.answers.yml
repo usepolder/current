@@ -1,0 +1,17 @@
+Button:
+  CO1: Yes
+  CO3: Yes
+  CO4: Yes
+  CO6: Yes
+  CO10: Yes
+  CO11: "N/A"
+  CO12: Yes
+  DE2: Yes
+  DE6: Yes
+  DE8: Yes
+  DE11: Yes
+  DO1: Yes
+Wrapper:
+  CO1: No
+  CO3: No
+  DE2: No

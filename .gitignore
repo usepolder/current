@@ -5,9 +5,7 @@ lib/
 .env
 
 # Generated report output — never commit this into a consuming repo.
-# The demo's report is the exception: it is the artifact people look at.
 current-report.html
-!demo/current-report.html
 
 # Local editor / agent config.
 .claude/

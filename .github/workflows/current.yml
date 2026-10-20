@@ -1,4 +1,4 @@
-# Dogfood: run Current on this repo's own fixture design system.
+# Dogfood: run Current on the small example design system in examples/dogfood.
 # PRs get the score comment; pushes to main refresh the badge and history.
 name: Current
 on:
@@ -37,6 +37,6 @@ jobs:
       - if: steps.bundle.outputs.built == 'true'
         uses: ./
         with:
-          working-directory: packages/core/tests/fixtures/ds
+          working-directory: examples/dogfood
         env:
           CURRENT_FIGMA_TOKEN: ${{ secrets.CURRENT_FIGMA_TOKEN }}

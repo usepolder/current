@@ -3,7 +3,7 @@ import * as yaml from 'js-yaml';
 import { isDocsUrl } from './docs-source';
 import { ConfigValidationError, ParseError, PathTraversalError } from './errors';
 import { CODE_CHECKS } from './code-checks';
-import { DESIGN_CHECKS } from './figma-checks';
+import { DEFAULT_MIN_BOUND, DESIGN_CHECKS, MIN_BOUND_KEY } from './figma-checks';
 import { CATEGORIES, DEFAULT_METRICS, type MetricCategory, type MetricDef } from './metrics';
 
 /** Bump when a change to the `current:` block would break configs in the wild. */
@@ -115,13 +115,36 @@ function parseComponents(raw: unknown): ComponentMapping[] {
   return out;
 }
 
-/** The checks a norm may name, and the one `params` key each takes (null: none). */
-const CHECK_PARAM: Record<string, 'headings' | 'text' | null> = {
+/**
+ * What `params` a check takes.
+ *
+ * `null` is none at all. A `strings` spec is required — a check that matches
+ * text has nothing to match without it. A `percent` spec is optional, because
+ * the check has a documented default and the param only re-tunes it.
+ */
+type ParamSpec =
+  | null
+  | { kind: 'strings'; key: 'headings' | 'text' }
+  | { kind: 'percent'; key: typeof MIN_BOUND_KEY; default: number };
+
+/** Yes requires this share of relevant layers to bind a token. */
+const MIN_BOUND_SPEC: ParamSpec = {
+  kind: 'percent',
+  key: MIN_BOUND_KEY,
+  default: DEFAULT_MIN_BOUND,
+};
+
+/** The checks a norm may name, and the `params` each takes. */
+const CHECK_PARAM: Record<string, ParamSpec> = {
   ...Object.fromEntries(Object.keys(CODE_CHECKS).map((id) => [id, null])),
   ...Object.fromEntries(Object.keys(DESIGN_CHECKS).map((id) => [id, null])),
-  'docs.section': 'headings',
-  'code.contains': 'text',
-  'code.forbids': 'text',
+  'docs.section': { kind: 'strings', key: 'headings' },
+  'code.contains': { kind: 'strings', key: 'text' },
+  'code.forbids': { kind: 'strings', key: 'text' },
+  'design.color-tokens': MIN_BOUND_SPEC,
+  'design.type-tokens': MIN_BOUND_SPEC,
+  'design.spacing-tokens': MIN_BOUND_SPEC,
+  'design.radius-tokens': MIN_BOUND_SPEC,
 };
 
 /** A check only sees its own source, so its id has to match the axis it scores. */
@@ -179,27 +202,51 @@ function parseCheck(
     );
   }
 
-  const key = CHECK_PARAM[check];
-  if (key === null) {
+  const spec = CHECK_PARAM[check];
+  if (spec === null) {
     if (entry.params !== undefined) {
       throw new ConfigValidationError(`${where}: check "${check}" takes no params`);
     }
     return { check };
   }
+
+  if (spec.kind === 'percent') {
+    // Optional: the check has a default, so leaving params out is the norm.
+    if (entry.params === undefined) return { check };
+    const params = entry.params;
+    const value = isPlainObject(params) ? params[spec.key] : undefined;
+    if (
+      !isPlainObject(params) ||
+      Object.keys(params).some((k) => k !== spec.key) ||
+      typeof value !== 'number' ||
+      !Number.isFinite(value) ||
+      value <= 0 ||
+      value > 100
+    ) {
+      throw new ConfigValidationError(
+        `${where}: check "${check}" takes params: { ${spec.key}: a number from 1 to 100 } ` +
+          `— the percent of relevant layers that must bind a token for Yes. ` +
+          `Default ${spec.default} means all of them. ` +
+          `A threshold of 0 would answer Yes for a component binding nothing.`,
+      );
+    }
+    return { check, params: { [spec.key]: value } };
+  }
+
   const params = entry.params;
-  const list = isPlainObject(params) ? params[key] : undefined;
+  const list = isPlainObject(params) ? params[spec.key] : undefined;
   if (
     !isPlainObject(params) ||
-    Object.keys(params).some((k) => k !== key) ||
+    Object.keys(params).some((k) => k !== spec.key) ||
     !Array.isArray(list) ||
     list.length === 0 ||
     !list.every((x) => typeof x === 'string' && x.trim() !== '')
   ) {
     throw new ConfigValidationError(
-      `${where}: check "${check}" needs params: { ${key}: [a non-empty list of strings] }`,
+      `${where}: check "${check}" needs params: { ${spec.key}: [a non-empty list of strings] }`,
     );
   }
-  return { check, params: { [key]: (list as string[]).map((x) => x.trim()) } };
+  return { check, params: { [spec.key]: (list as string[]).map((x) => x.trim()) } };
 }
 
 function parseOverrides(raw: unknown, base: readonly MetricDef[]): Map<string, MetricDef> {

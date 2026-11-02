@@ -456,7 +456,7 @@ function runCheck(
     }
     const fn = DESIGN_CHECKS[checkId];
     if (!fn) return { answer: 'N/A', evidence: `unknown check "${checkId}"` };
-    return fn(args.designFacts);
+    return fn(args.designFacts, params);
   }
 
   if (checkId === 'docs.section') {

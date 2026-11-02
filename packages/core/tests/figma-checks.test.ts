@@ -160,6 +160,73 @@ describe('design token checks', () => {
     expect(r.evidence).not.toContain('no layers');
   });
 
+  // The all-or-nothing rule was always a 100% threshold; these pin that the
+  // default still behaves exactly that way, and that naming it lets a norm
+  // re-tune it without touching the code.
+  describe('min_bound', () => {
+    /** Two of three relevant layers bind: 66.7%. */
+    function twoOfThree(): FigmaNode {
+      const bound = (id: string): FigmaNode => ({
+        id,
+        name: 'L',
+        type: 'RECTANGLE',
+        cornerRadius: 4,
+        boundVariables: { rectangleCornerRadii: { RECTANGLE_TOP_LEFT_CORNER_RADIUS: { id: 'V:1' } } },
+      });
+      return component({
+        cornerRadius: 4,
+        children: [bound('1:2'), bound('1:3')],
+      });
+    }
+
+    const check = DESIGN_CHECKS['design.radius-tokens'];
+
+    it('defaults to requiring every relevant layer, with no threshold in the evidence', () => {
+      const r = check({ componentName: 'B', node: twoOfThree() });
+      expect(r.answer).toBe('No');
+      expect(r.evidence).toBe('1 of 3 layer(s) use raw radius tokens instead of a token');
+      expect(r.evidence).not.toContain('threshold');
+    });
+
+    it('answers Yes once the bound share reaches an explicit threshold', () => {
+      const r = check({ componentName: 'B', node: twoOfThree() }, { min_bound: 60 });
+      expect(r.answer).toBe('Yes');
+      expect(r.evidence).toBe('2 of 3 layer(s) bind radius tokens (67% ≥ 60% threshold)');
+    });
+
+    it('still answers No below the threshold, and says by how much', () => {
+      const r = check({ componentName: 'B', node: twoOfThree() }, { min_bound: 90 });
+      expect(r.answer).toBe('No');
+      expect(r.evidence).toContain('67% < 90% threshold');
+    });
+
+    it('names no threshold when the override happens to equal the default', () => {
+      const r = check({ componentName: 'B', node: twoOfThree() }, { min_bound: 100 });
+      expect(r.answer).toBe('No');
+      expect(r.evidence).not.toContain('threshold');
+    });
+
+    it('applies to every token norm, not just radius', () => {
+      const text = (id: string, bound: boolean): FigmaNode => ({
+        id,
+        name: 'T',
+        type: 'TEXT',
+        ...(bound ? { boundVariables: { fontSize: { id: 'V:9' } } } : {}),
+      });
+      const node = component({ children: [text('1:2', true), text('1:3', false)] });
+      expect(DESIGN_CHECKS['design.type-tokens']({ componentName: 'B', node }).answer).toBe('No');
+      expect(
+        DESIGN_CHECKS['design.type-tokens']({ componentName: 'B', node }, { min_bound: 50 }).answer,
+      ).toBe('Yes');
+    });
+
+    it('never answers Yes for a component binding nothing', () => {
+      const none = component({ cornerRadius: 4 });
+      // 1 is the lowest a config may set, so 0% bound can never clear it.
+      expect(check({ componentName: 'B', node: none }, { min_bound: 1 }).answer).toBe('No');
+    });
+  });
+
   it('still reports the raw-value ratio when only some layers bind a radius', () => {
     const bound = component({
       id: '1:2',

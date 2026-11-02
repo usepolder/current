@@ -50,9 +50,12 @@ export {
   type CodeFacts,
 } from './code-checks';
 export {
+  DEFAULT_MIN_BOUND,
   DESIGN_CHECKS,
+  MIN_BOUND_KEY,
   figmaPropertyNames,
   flatten,
+  type DesignCheck,
   type DesignFacts,
 } from './figma-checks';
 export {

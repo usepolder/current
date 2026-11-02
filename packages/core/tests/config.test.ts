@@ -338,6 +338,29 @@ describe('customising the norms', () => {
     rejects('custom:\n  - { id: A1, category: code, guideline: g, params: { text: [x] } }', /needs a `check`/);
   });
 
+  // `min_bound` is the first optional param, so it validates differently from
+  // the string-list params: leaving it out is the normal case.
+  it('accepts a token norm with no params, and reads min_bound when given', () => {
+    expect(metrics(indent('override:\n  DE1: { params: { min_bound: 90 } }')).find((m) => m.id === 'DE1')?.params).toEqual({
+      min_bound: 90,
+    });
+    expect(metrics(indent('override:\n  DE1: { guideline: g }')).find((m) => m.id === 'DE1')?.params).toBeUndefined();
+  });
+
+  it('refuses a min_bound that is not a usable percent', () => {
+    const bad = (v: string) => rejects(`override:\n  DE5: { params: { min_bound: ${v} } }`, /min_bound/);
+    bad('0'); // would answer Yes for a component binding nothing
+    bad('101');
+    bad('-10');
+    bad('"90"'); // a string, not a number
+    rejects('override:\n  DE5: { params: { min_bound: 90, text: [x] } }', /min_bound/);
+    rejects('override:\n  DE5: { params: { headings: [x] } }', /min_bound/);
+  });
+
+  it('refuses min_bound on a check that has no threshold', () => {
+    rejects('override:\n  DE7: { params: { min_bound: 90 } }', /takes no params/);
+  });
+
   it('refuses to override an unknown id, pointing at custom instead', () => {
     rejects('override:\n  ZZ9: { guideline: g }', /not a built-in metric.*metrics\.custom/);
   });

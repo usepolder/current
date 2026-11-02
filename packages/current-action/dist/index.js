@@ -34711,13 +34711,23 @@ function parseComponents(raw) {
     }
     return out;
 }
-/** The checks a norm may name, and the one `params` key each takes (null: none). */
+/** Yes requires this share of relevant layers to bind a token. */
+const MIN_BOUND_SPEC = {
+    kind: 'percent',
+    key: figma_checks_1.MIN_BOUND_KEY,
+    default: figma_checks_1.DEFAULT_MIN_BOUND,
+};
+/** The checks a norm may name, and the `params` each takes. */
 const CHECK_PARAM = {
     ...Object.fromEntries(Object.keys(code_checks_1.CODE_CHECKS).map((id) => [id, null])),
     ...Object.fromEntries(Object.keys(figma_checks_1.DESIGN_CHECKS).map((id) => [id, null])),
-    'docs.section': 'headings',
-    'code.contains': 'text',
-    'code.forbids': 'text',
+    'docs.section': { kind: 'strings', key: 'headings' },
+    'code.contains': { kind: 'strings', key: 'text' },
+    'code.forbids': { kind: 'strings', key: 'text' },
+    'design.color-tokens': MIN_BOUND_SPEC,
+    'design.type-tokens': MIN_BOUND_SPEC,
+    'design.spacing-tokens': MIN_BOUND_SPEC,
+    'design.radius-tokens': MIN_BOUND_SPEC,
 };
 /** A check only sees its own source, so its id has to match the axis it scores. */
 const CHECK_PREFIX = {
@@ -34759,23 +34769,42 @@ function parseCheck(entry, category, where) {
         throw new errors_1.ConfigValidationError(`${where}: check "${check}" cannot score a ${category} norm ` +
             `(${category} norms use ${CHECK_PREFIX[category]}* checks)`);
     }
-    const key = CHECK_PARAM[check];
-    if (key === null) {
+    const spec = CHECK_PARAM[check];
+    if (spec === null) {
         if (entry.params !== undefined) {
             throw new errors_1.ConfigValidationError(`${where}: check "${check}" takes no params`);
         }
         return { check };
     }
+    if (spec.kind === 'percent') {
+        // Optional: the check has a default, so leaving params out is the norm.
+        if (entry.params === undefined)
+            return { check };
+        const params = entry.params;
+        const value = isPlainObject(params) ? params[spec.key] : undefined;
+        if (!isPlainObject(params) ||
+            Object.keys(params).some((k) => k !== spec.key) ||
+            typeof value !== 'number' ||
+            !Number.isFinite(value) ||
+            value <= 0 ||
+            value > 100) {
+            throw new errors_1.ConfigValidationError(`${where}: check "${check}" takes params: { ${spec.key}: a number from 1 to 100 } ` +
+                `— the percent of relevant layers that must bind a token for Yes. ` +
+                `Default ${spec.default} means all of them. ` +
+                `A threshold of 0 would answer Yes for a component binding nothing.`);
+        }
+        return { check, params: { [spec.key]: value } };
+    }
     const params = entry.params;
-    const list = isPlainObject(params) ? params[key] : undefined;
+    const list = isPlainObject(params) ? params[spec.key] : undefined;
     if (!isPlainObject(params) ||
-        Object.keys(params).some((k) => k !== key) ||
+        Object.keys(params).some((k) => k !== spec.key) ||
         !Array.isArray(list) ||
         list.length === 0 ||
         !list.every((x) => typeof x === 'string' && x.trim() !== '')) {
-        throw new errors_1.ConfigValidationError(`${where}: check "${check}" needs params: { ${key}: [a non-empty list of strings] }`);
+        throw new errors_1.ConfigValidationError(`${where}: check "${check}" needs params: { ${spec.key}: [a non-empty list of strings] }`);
     }
-    return { check, params: { [key]: list.map((x) => x.trim()) } };
+    return { check, params: { [spec.key]: list.map((x) => x.trim()) } };
 }
 function parseOverrides(raw, base) {
     const out = new Map();
@@ -35350,7 +35379,7 @@ exports.FigmaError = FigmaError;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.DESIGN_CHECKS = void 0;
+exports.DESIGN_CHECKS = exports.MIN_BOUND_KEY = exports.DEFAULT_MIN_BOUND = void 0;
 exports.flatten = flatten;
 exports.checkColorTokens = checkColorTokens;
 exports.checkTypeTokens = checkTypeTokens;
@@ -35377,7 +35406,23 @@ function boundKeys(node) {
 function styleKeys(node) {
     return Object.keys(node.styles ?? {});
 }
-/** Shared shape: is any node in the subtree binding this kind of token? */
+/**
+ * The share of relevant layers that must bind a token for a token norm to
+ * answer Yes.
+ *
+ * 100 means every one of them, which is what these checks have always done.
+ * It is a threshold either way; this names it so it can be read and re-tuned
+ * instead of being an unwritten property of the code.
+ */
+exports.DEFAULT_MIN_BOUND = 100;
+/** The params key a token norm re-tunes its threshold with. */
+exports.MIN_BOUND_KEY = 'min_bound';
+/** `min_bound` off a norm's params, or the default. Validated in config.ts. */
+function minBoundFrom(params) {
+    const raw = params?.[exports.MIN_BOUND_KEY];
+    return typeof raw === 'number' ? raw : exports.DEFAULT_MIN_BOUND;
+}
+/** Shared shape: are enough nodes in the subtree binding this kind of token? */
 function tokenCheck(node, opts) {
     const nodes = flatten(node).filter(opts.applies);
     if (nodes.length === 0) {
@@ -35385,23 +35430,40 @@ function tokenCheck(node, opts) {
     }
     const bound = nodes.filter((n) => boundKeys(n).some((k) => opts.boundVariableKeys.includes(k)) ||
         styleKeys(n).some((k) => (opts.styleKeys ?? []).includes(k)));
+    const pct = (bound.length / nodes.length) * 100;
+    const met = pct >= opts.minBound;
+    // Only a non-default threshold is named, so the evidence a reader has seen
+    // on every run so far does not change wording underneath them.
+    const tail = opts.minBound === exports.DEFAULT_MIN_BOUND
+        ? ''
+        : ` (${pct.toFixed(0)}% ${met ? '≥' : '<'} ${opts.minBound}% threshold)`;
     if (bound.length === nodes.length) {
-        return { answer: 'Yes', evidence: `all ${nodes.length} relevant layer(s) bind ${opts.label}` };
+        return {
+            answer: 'Yes',
+            evidence: `all ${nodes.length} relevant layer(s) bind ${opts.label}`,
+        };
+    }
+    if (met) {
+        return {
+            answer: 'Yes',
+            evidence: `${bound.length} of ${nodes.length} layer(s) bind ${opts.label}${tail}`,
+        };
     }
     if (bound.length === 0) {
         return {
             answer: 'No',
-            evidence: `none of the ${nodes.length} relevant layer(s) bind ${opts.label} — raw values only`,
+            evidence: `none of the ${nodes.length} relevant layer(s) bind ${opts.label} — raw values only${tail}`,
         };
     }
     return {
         answer: 'No',
-        evidence: `${nodes.length - bound.length} of ${nodes.length} layer(s) use raw ${opts.label} instead of a token`,
+        evidence: `${nodes.length - bound.length} of ${nodes.length} layer(s) use raw ${opts.label} instead of a token${tail}`,
     };
 }
 /** DE1 — colour tokens (bound variables or a shared fill/stroke style). */
-function checkColorTokens(facts) {
+function checkColorTokens(facts, params) {
     return tokenCheck(facts.node, {
+        minBound: minBoundFrom(params),
         label: 'colour tokens',
         boundVariableKeys: ['fills', 'strokes'],
         styleKeys: ['fill', 'fills', 'stroke', 'strokes'],
@@ -35409,17 +35471,28 @@ function checkColorTokens(facts) {
     });
 }
 /** DE3 — typography tokens on text layers. */
-function checkTypeTokens(facts) {
+function checkTypeTokens(facts, params) {
     return tokenCheck(facts.node, {
+        minBound: minBoundFrom(params),
         label: 'typography tokens',
-        boundVariableKeys: ['fontSize', 'fontFamily', 'fontWeight', 'lineHeight', 'letterSpacing'],
+        // `fontStyle` is how Figma reports a bound weight/style; `fontWeight` is
+        // accepted too but the REST API has not been observed using it.
+        boundVariableKeys: [
+            'fontSize',
+            'fontFamily',
+            'fontStyle',
+            'fontWeight',
+            'lineHeight',
+            'letterSpacing',
+        ],
         styleKeys: ['text'],
         applies: (n) => n.type === 'TEXT',
     });
 }
 /** DE4 — spacing tokens on auto-layout frames. */
-function checkSpacingTokens(facts) {
+function checkSpacingTokens(facts, params) {
     return tokenCheck(facts.node, {
+        minBound: minBoundFrom(params),
         label: 'spacing tokens',
         boundVariableKeys: [
             'itemSpacing',
@@ -35434,18 +35507,35 @@ function checkSpacingTokens(facts) {
             [n.itemSpacing, n.paddingLeft, n.paddingRight, n.paddingTop, n.paddingBottom].some((v) => typeof v === 'number' && v > 0),
     });
 }
+/**
+ * The keys Figma reports a bound corner radius under.
+ *
+ * `rectangleCornerRadii` is the one the REST API actually uses when a radius is
+ * bound to a variable — it holds the per-corner aliases
+ * (`RECTANGLE_TOP_LEFT_CORNER_RADIUS` and friends). The singular names are kept
+ * because a scalar binding is cheap to accept and costs nothing if it never
+ * appears.
+ */
+const RADIUS_BOUND_KEYS = [
+    'cornerRadius',
+    'rectangleCornerRadii',
+    'topLeftRadius',
+    'topRightRadius',
+    'bottomLeftRadius',
+    'bottomRightRadius',
+];
 /** DE5 — border radius tokens. */
-function checkRadiusTokens(facts) {
+function checkRadiusTokens(facts, params) {
     return tokenCheck(facts.node, {
+        minBound: minBoundFrom(params),
         label: 'radius tokens',
-        boundVariableKeys: [
-            'cornerRadius',
-            'topLeftRadius',
-            'topRightRadius',
-            'bottomLeftRadius',
-            'bottomRightRadius',
-        ],
-        applies: (n) => typeof n.cornerRadius === 'number' && n.cornerRadius > 0,
+        boundVariableKeys: RADIUS_BOUND_KEYS,
+        // A node with per-corner radii carries no scalar `cornerRadius` at all —
+        // Figma omits the geometry and exposes only the binding — so binding a
+        // radius variable is itself proof the node uses a radius. Without this a
+        // fully tokenised component reports N/A, "no layers use radius tokens".
+        applies: (n) => (typeof n.cornerRadius === 'number' && n.cornerRadius > 0) ||
+            boundKeys(n).some((k) => RADIUS_BOUND_KEYS.includes(k)),
     });
 }
 const DEFAULT_LAYER_NAME = /^(frame|group|rectangle|ellipse|vector|line|polygon|star|slice|component|instance|union|subtract|intersect|exclude)(\s+\d+)?$/i;
@@ -35777,8 +35867,8 @@ function lastEntry(entries) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.FIGMA_API = exports.collectComponents = exports.FigmaClient = exports.RENDERER_INSTALL_HINT = exports.RendererUnavailableError = exports.closeRenderer = exports.createPlaywrightRenderer = exports.isDocsUrl = exports.headingMatches = exports.extractHtmlHeadings = exports.extractHeadings = exports.checkDocSection = exports.flatten = exports.figmaPropertyNames = exports.DESIGN_CHECKS = exports.normalisePropName = exports.collectCodePropNames = exports.CODE_CHECKS = exports.QUADRANT_LABELS = exports.round1 = exports.usagePriority = exports.weakestAxis = exports.averageConfidentScore = exports.averageScore = exports.quadrantFor = exports.scoreAnswers = exports.silentLogger = exports.createLogger = exports.collectRelatedFiles = exports.BABEL_OPTIONS = exports.parseSource = exports.lookupAnswer = exports.coerceAnswer = exports.parseAnswers = exports.DEFAULT_MIN_CONFIDENCE = exports.DEFAULT_THRESHOLD = exports.CURRENT_SCHEMA_VERSION = exports.resolveRepoPath = exports.resolveComponentPaths = exports.parseConfig = exports.metricKeys = exports.CATEGORIES = exports.DEFAULT_METRICS_BY_ID = exports.DEFAULT_METRICS = exports.FigmaError = exports.NoComponentsError = exports.PathTraversalError = exports.ConfigValidationError = exports.ParseError = exports.CurrentError = void 0;
-exports.HISTORY_FILE = exports.HISTORY_DIR = exports.metricsHash = exports.lastEntry = exports.historyPath = exports.entryFromReport = exports.readHistory = exports.appendHistory = exports.scanRepo = exports.MIN_REACH_SCHEMA = exports.resolveUsageFile = exports.loadUsage = exports.parseReachUsage = exports.metricsForCategory = exports.fixFirst = exports.axesNotFullyCovered = exports.countQuadrants = exports.SCHEMA_VERSION = exports.TOKEN_ENV_VAR = void 0;
+exports.FigmaClient = exports.RENDERER_INSTALL_HINT = exports.RendererUnavailableError = exports.closeRenderer = exports.createPlaywrightRenderer = exports.isDocsUrl = exports.headingMatches = exports.extractHtmlHeadings = exports.extractHeadings = exports.checkDocSection = exports.flatten = exports.figmaPropertyNames = exports.MIN_BOUND_KEY = exports.DESIGN_CHECKS = exports.DEFAULT_MIN_BOUND = exports.normalisePropName = exports.collectCodePropNames = exports.CODE_CHECKS = exports.QUADRANT_LABELS = exports.round1 = exports.usagePriority = exports.weakestAxis = exports.averageConfidentScore = exports.averageScore = exports.quadrantFor = exports.scoreAnswers = exports.silentLogger = exports.createLogger = exports.collectRelatedFiles = exports.BABEL_OPTIONS = exports.parseSource = exports.lookupAnswer = exports.coerceAnswer = exports.parseAnswers = exports.DEFAULT_MIN_CONFIDENCE = exports.DEFAULT_THRESHOLD = exports.CURRENT_SCHEMA_VERSION = exports.resolveRepoPath = exports.resolveComponentPaths = exports.parseConfig = exports.metricKeys = exports.CATEGORIES = exports.DEFAULT_METRICS_BY_ID = exports.DEFAULT_METRICS = exports.FigmaError = exports.NoComponentsError = exports.PathTraversalError = exports.ConfigValidationError = exports.ParseError = exports.CurrentError = void 0;
+exports.HISTORY_FILE = exports.HISTORY_DIR = exports.metricsHash = exports.lastEntry = exports.historyPath = exports.entryFromReport = exports.readHistory = exports.appendHistory = exports.scanRepo = exports.MIN_REACH_SCHEMA = exports.resolveUsageFile = exports.loadUsage = exports.parseReachUsage = exports.metricsForCategory = exports.fixFirst = exports.axesNotFullyCovered = exports.countQuadrants = exports.SCHEMA_VERSION = exports.TOKEN_ENV_VAR = exports.FIGMA_API = exports.collectComponents = void 0;
 var errors_1 = __nccwpck_require__(76);
 Object.defineProperty(exports, "CurrentError", ({ enumerable: true, get: function () { return errors_1.CurrentError; } }));
 Object.defineProperty(exports, "ParseError", ({ enumerable: true, get: function () { return errors_1.ParseError; } }));
@@ -35824,7 +35914,9 @@ Object.defineProperty(exports, "CODE_CHECKS", ({ enumerable: true, get: function
 Object.defineProperty(exports, "collectCodePropNames", ({ enumerable: true, get: function () { return code_checks_1.collectCodePropNames; } }));
 Object.defineProperty(exports, "normalisePropName", ({ enumerable: true, get: function () { return code_checks_1.normalisePropName; } }));
 var figma_checks_1 = __nccwpck_require__(4149);
+Object.defineProperty(exports, "DEFAULT_MIN_BOUND", ({ enumerable: true, get: function () { return figma_checks_1.DEFAULT_MIN_BOUND; } }));
 Object.defineProperty(exports, "DESIGN_CHECKS", ({ enumerable: true, get: function () { return figma_checks_1.DESIGN_CHECKS; } }));
+Object.defineProperty(exports, "MIN_BOUND_KEY", ({ enumerable: true, get: function () { return figma_checks_1.MIN_BOUND_KEY; } }));
 Object.defineProperty(exports, "figmaPropertyNames", ({ enumerable: true, get: function () { return figma_checks_1.figmaPropertyNames; } }));
 Object.defineProperty(exports, "flatten", ({ enumerable: true, get: function () { return figma_checks_1.flatten; } }));
 var docs_checks_1 = __nccwpck_require__(6556);
@@ -36871,7 +36963,7 @@ function runCheck(checkId, params, args) {
         const fn = figma_checks_1.DESIGN_CHECKS[checkId];
         if (!fn)
             return { answer: 'N/A', evidence: `unknown check "${checkId}"` };
-        return fn(args.designFacts);
+        return fn(args.designFacts, params);
     }
     if (checkId === 'docs.section') {
         return (0, docs_checks_1.checkDocSection)({

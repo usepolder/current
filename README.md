@@ -242,17 +242,28 @@ The checks a norm can name:
 | `code.contains` | the component's source contains at least one of these | `text: [...]` |
 | `code.forbids` | the component's source contains none of these | `text: [...]` |
 | `code.aria-attributes`, `code.text-alternatives`, `code.token-usage`, `code.semantic-name`, `code.figma-prop-parity` | as in [the metrics](#the-metrics) | none |
-| `design.color-tokens`, `design.type-tokens`, `design.spacing-tokens`, `design.radius-tokens`, `design.layer-names`, `design.prototyping`, `design.auto-layout` | as in [the metrics](#the-metrics) | none |
+| `design.color-tokens`, `design.type-tokens`, `design.spacing-tokens`, `design.radius-tokens` | as in [the metrics](#the-metrics) | `min_bound: 100` (optional) |
+| `design.layer-names`, `design.prototyping`, `design.auto-layout` | as in [the metrics](#the-metrics) | none |
 
 A check must match its category: `code.*` scores a code norm, `design.*` a design norm, `docs.*` a documentation norm.
 
 Things worth knowing:
 
 - **`code.contains` and `code.forbids` match literal text**, case-sensitively, across the entry file and the files it imports from its own directory (the same files the hardcoded-value check reads). Comments are ignored, so "// never use dangerouslySetInnerHTML" is not a use of it. They are not regexes: this config is read straight off pull-request branches, including forks, and a pattern from a fork can hang the runner.
+- **The four token checks answer Yes only when *every* relevant layer binds a token.** That is `min_bound: 100`, the default, and it is strict on purpose: one hardcoded colour among four hundred layers is still a hardcoded colour. It also means these checks ask a narrower question than a hand audit usually does — an auditor looking at a component that is 97% tokenised will often call it tokenised, and Current will not. Set `min_bound` to the percent you actually mean:
+
+  ```yaml
+  current:
+    metrics:
+      override:
+        DE1: { params: { min_bound: 90 } }   # 90% of layers is good enough
+  ```
+
+  The evidence names the ratio either way, so `11 of 151 layer(s) use raw radius tokens` is visible whichever side of the threshold it falls. A threshold is rejected outside 1-100: at 0 a component binding nothing would answer Yes.
 - **`override` replaces, it does not extend.** Setting `params` swaps the whole list, so to add one heading to DO2 you repeat the defaults. Setting `check` without `params` on a check that needs them is an error.
 - **`override` changes what a built-in checks, not how it is scored.** You can reword it, re-tune its params, or point it at a different check. To move a norm to another category, disable it and add a custom one.
 - **Typos are errors, not silent no-ops.** An unknown key, an unknown check, a duplicate id, or a `check` in the wrong category fails with the path of the norm at fault.
-- **Changing what is measured breaks the trend line**, the same as adding or removing a metric. Adding a norm, changing an override's `check` or `params`, or forcing a built-in to manual all count. Rewording a guideline does not.
+- **Changing what is measured breaks the trend line**, the same as adding or removing a metric. Adding a norm, changing an override's `check` or `params`, or forcing a built-in to manual all count — `min_bound` included, since re-tuning it changes what the score means. Rewording a guideline does not.
 
 ## CLI
 

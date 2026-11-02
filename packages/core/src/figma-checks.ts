@@ -6,6 +6,14 @@ export interface DesignFacts {
   node: FigmaNode;
 }
 
+type Params = Record<string, unknown>;
+
+/**
+ * A check reads the component's Figma node, plus the `params` its norm
+ * configured — the same shape as `CodeCheck`.
+ */
+export type DesignCheck = (facts: DesignFacts, params?: Params) => CheckResult;
+
 /** Every node in the subtree, the component itself first. */
 export function flatten(node: FigmaNode): FigmaNode[] {
   const out: FigmaNode[] = [];
@@ -25,7 +33,26 @@ function styleKeys(node: FigmaNode): string[] {
   return Object.keys(node.styles ?? {});
 }
 
-/** Shared shape: is any node in the subtree binding this kind of token? */
+/**
+ * The share of relevant layers that must bind a token for a token norm to
+ * answer Yes.
+ *
+ * 100 means every one of them, which is what these checks have always done.
+ * It is a threshold either way; this names it so it can be read and re-tuned
+ * instead of being an unwritten property of the code.
+ */
+export const DEFAULT_MIN_BOUND = 100;
+
+/** The params key a token norm re-tunes its threshold with. */
+export const MIN_BOUND_KEY = 'min_bound';
+
+/** `min_bound` off a norm's params, or the default. Validated in config.ts. */
+function minBoundFrom(params?: Record<string, unknown>): number {
+  const raw = params?.[MIN_BOUND_KEY];
+  return typeof raw === 'number' ? raw : DEFAULT_MIN_BOUND;
+}
+
+/** Shared shape: are enough nodes in the subtree binding this kind of token? */
 function tokenCheck(
   node: FigmaNode,
   opts: {
@@ -34,6 +61,8 @@ function tokenCheck(
     styleKeys?: readonly string[];
     /** Nodes this metric applies to at all; empty means N/A. */
     applies: (n: FigmaNode) => boolean;
+    /** Percent of relevant layers that must bind; 100 means all of them. */
+    minBound: number;
   },
 ): CheckResult {
   const nodes = flatten(node).filter(opts.applies);
@@ -45,24 +74,43 @@ function tokenCheck(
       boundKeys(n).some((k) => opts.boundVariableKeys.includes(k)) ||
       styleKeys(n).some((k) => (opts.styleKeys ?? []).includes(k)),
   );
+  const pct = (bound.length / nodes.length) * 100;
+  const met = pct >= opts.minBound;
+  // Only a non-default threshold is named, so the evidence a reader has seen
+  // on every run so far does not change wording underneath them.
+  const tail =
+    opts.minBound === DEFAULT_MIN_BOUND
+      ? ''
+      : ` (${pct.toFixed(0)}% ${met ? '≥' : '<'} ${opts.minBound}% threshold)`;
+
   if (bound.length === nodes.length) {
-    return { answer: 'Yes', evidence: `all ${nodes.length} relevant layer(s) bind ${opts.label}` };
+    return {
+      answer: 'Yes',
+      evidence: `all ${nodes.length} relevant layer(s) bind ${opts.label}`,
+    };
+  }
+  if (met) {
+    return {
+      answer: 'Yes',
+      evidence: `${bound.length} of ${nodes.length} layer(s) bind ${opts.label}${tail}`,
+    };
   }
   if (bound.length === 0) {
     return {
       answer: 'No',
-      evidence: `none of the ${nodes.length} relevant layer(s) bind ${opts.label} — raw values only`,
+      evidence: `none of the ${nodes.length} relevant layer(s) bind ${opts.label} — raw values only${tail}`,
     };
   }
   return {
     answer: 'No',
-    evidence: `${nodes.length - bound.length} of ${nodes.length} layer(s) use raw ${opts.label} instead of a token`,
+    evidence: `${nodes.length - bound.length} of ${nodes.length} layer(s) use raw ${opts.label} instead of a token${tail}`,
   };
 }
 
 /** DE1 — colour tokens (bound variables or a shared fill/stroke style). */
-export function checkColorTokens(facts: DesignFacts): CheckResult {
+export function checkColorTokens(facts: DesignFacts, params?: Params): CheckResult {
   return tokenCheck(facts.node, {
+    minBound: minBoundFrom(params),
     label: 'colour tokens',
     boundVariableKeys: ['fills', 'strokes'],
     styleKeys: ['fill', 'fills', 'stroke', 'strokes'],
@@ -71,8 +119,9 @@ export function checkColorTokens(facts: DesignFacts): CheckResult {
 }
 
 /** DE3 — typography tokens on text layers. */
-export function checkTypeTokens(facts: DesignFacts): CheckResult {
+export function checkTypeTokens(facts: DesignFacts, params?: Params): CheckResult {
   return tokenCheck(facts.node, {
+    minBound: minBoundFrom(params),
     label: 'typography tokens',
     // `fontStyle` is how Figma reports a bound weight/style; `fontWeight` is
     // accepted too but the REST API has not been observed using it.
@@ -90,8 +139,9 @@ export function checkTypeTokens(facts: DesignFacts): CheckResult {
 }
 
 /** DE4 — spacing tokens on auto-layout frames. */
-export function checkSpacingTokens(facts: DesignFacts): CheckResult {
+export function checkSpacingTokens(facts: DesignFacts, params?: Params): CheckResult {
   return tokenCheck(facts.node, {
+    minBound: minBoundFrom(params),
     label: 'spacing tokens',
     boundVariableKeys: [
       'itemSpacing',
@@ -129,8 +179,9 @@ const RADIUS_BOUND_KEYS = [
 ] as const;
 
 /** DE5 — border radius tokens. */
-export function checkRadiusTokens(facts: DesignFacts): CheckResult {
+export function checkRadiusTokens(facts: DesignFacts, params?: Params): CheckResult {
   return tokenCheck(facts.node, {
+    minBound: minBoundFrom(params),
     label: 'radius tokens',
     boundVariableKeys: RADIUS_BOUND_KEYS,
     // A node with per-corner radii carries no scalar `cornerRadius` at all —
@@ -231,7 +282,7 @@ export function figmaPropertyNames(node: FigmaNode): string[] {
   return [];
 }
 
-export const DESIGN_CHECKS: Record<string, (facts: DesignFacts) => CheckResult> = {
+export const DESIGN_CHECKS: Record<string, DesignCheck> = {
   'design.color-tokens': checkColorTokens,
   'design.type-tokens': checkTypeTokens,
   'design.spacing-tokens': checkSpacingTokens,

@@ -26,7 +26,7 @@ import { renderReport } from './render';
 import { renderTerminal } from './terminal';
 
 export const CONFIG_FILE = '.polder.yml';
-export const ANSWERS_FILE = '.current.answers.yml';
+export const ANSWERS_FILE = '.polder.answers.yml';
 export const DEFAULT_REPORT_FILE = 'current-report.html';
 
 export interface CliArgs {

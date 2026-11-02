@@ -162,7 +162,7 @@ For the CLI it is an **optional** dependency. If you document in the repo, or yo
 
 ### 4. Answer the manual metrics
 
-`.current.answers.yml`:
+`.polder.answers.yml`:
 
 ```yaml
 Button:
@@ -227,7 +227,7 @@ current:
         guideline: "Has a dark-mode variant"    # ...or no `check`: answered by a person
 ```
 
-**If it can be checked automatically, it is. If not, a person answers it.** A custom norm with no `check` is manual: it appears in the report like any other, and its answers go in `.current.answers.yml` next to the built-in manual ones.
+**If it can be checked automatically, it is. If not, a person answers it.** A custom norm with no `check` is manual: it appears in the report like any other, and its answers go in `.polder.answers.yml` next to the built-in manual ones.
 
 ```yaml
 Button:

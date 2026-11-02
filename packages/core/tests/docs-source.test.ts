@@ -21,7 +21,7 @@ function repoWith(config: string, answers = ''): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'current-docs-'));
   temps.push(dir);
   fs.writeFileSync(path.join(dir, '.polder.yml'), polder(config));
-  if (answers !== '') fs.writeFileSync(path.join(dir, '.current.answers.yml'), answers);
+  if (answers !== '') fs.writeFileSync(path.join(dir, '.polder.answers.yml'), answers);
   return dir;
 }
 

@@ -37,7 +37,7 @@ async function fixtureReport(): Promise<CurrentReport> {
   return scanRepo({
     repoRoot: FIXTURE,
     config: parseConfig(fs.readFileSync(path.join(FIXTURE, '.polder.yml'), 'utf8')),
-    answers: parseAnswers(fs.readFileSync(path.join(FIXTURE, '.current.answers.yml'), 'utf8')),
+    answers: parseAnswers(fs.readFileSync(path.join(FIXTURE, '.polder.answers.yml'), 'utf8')),
     figma: figma(),
     now: () => new Date('2026-01-01T00:00:00.000Z'),
   });

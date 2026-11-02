@@ -16,7 +16,7 @@ import { parseConfig, parseAnswers, scanRepo } from '@usepolder/current-core';
 const report = await scanRepo({
   repoRoot: process.cwd(),
   config: parseConfig(fs.readFileSync('.polder.yml', 'utf8')),
-  answers: parseAnswers(fs.readFileSync('.current.answers.yml', 'utf8')),
+  answers: parseAnswers(fs.readFileSync('.polder.answers.yml', 'utf8')),
 });
 
 report.totals;      // { code, design, documentation, overall, basis }

@@ -27,7 +27,7 @@ export function coerceAnswer(value: unknown, component: string, metric: string):
   );
 }
 
-export function parseAnswers(raw: string, filePath = '.current.answers.yml'): AnswerBook {
+export function parseAnswers(raw: string, filePath = '.polder.answers.yml'): AnswerBook {
   let parsed: unknown;
   try {
     parsed = yaml.load(raw);

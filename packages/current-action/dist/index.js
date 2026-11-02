@@ -34088,7 +34088,7 @@ function coerceAnswer(value, component, metric) {
     }
     throw new errors_1.ConfigValidationError(`${component}.${metric}: "${String(value)}" is not a valid answer. Use Yes, No, or "N/A".`);
 }
-function parseAnswers(raw, filePath = '.current.answers.yml') {
+function parseAnswers(raw, filePath = '.polder.answers.yml') {
     let parsed;
     try {
         parsed = yaml.load(raw);
@@ -36874,7 +36874,7 @@ function scoreComponent(c, config, answers, logger, ctx) {
                 guideline: metric.guideline,
                 answer: 'N/A',
                 source: 'unanswered',
-                evidence: 'manual metric with no answer in .current.answers.yml',
+                evidence: 'manual metric with no answer in .polder.answers.yml',
             });
             continue;
         }
@@ -37724,7 +37724,7 @@ const mode_1 = __nccwpck_require__(2060);
 const docs_runtime_1 = __nccwpck_require__(2565);
 const persist_1 = __nccwpck_require__(9587);
 const CONFIG_FILE = '.polder.yml';
-const ANSWERS_FILE = '.current.answers.yml';
+const ANSWERS_FILE = '.polder.answers.yml';
 function readIfExists(file) {
     return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
 }

@@ -33,7 +33,7 @@ import { createActionRenderer, defaultDeps } from './docs-runtime';
 import { commitAndPush } from './persist';
 
 const CONFIG_FILE = '.polder.yml';
-const ANSWERS_FILE = '.current.answers.yml';
+const ANSWERS_FILE = '.polder.answers.yml';
 
 function readIfExists(file: string): string | null {
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;

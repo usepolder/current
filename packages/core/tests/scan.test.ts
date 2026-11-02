@@ -59,7 +59,7 @@ async function scanFixture(
   overrides: { figma?: FigmaClient | null; usage?: Record<string, number> } = {},
 ): Promise<CurrentReport> {
   const config = parseConfig(fs.readFileSync(path.join(FIXTURE, '.polder.yml'), 'utf8'));
-  const answers = parseAnswers(fs.readFileSync(path.join(FIXTURE, '.current.answers.yml'), 'utf8'));
+  const answers = parseAnswers(fs.readFileSync(path.join(FIXTURE, '.polder.answers.yml'), 'utf8'));
   return scanRepo({
     repoRoot: FIXTURE,
     config,

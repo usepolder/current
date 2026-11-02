@@ -51,7 +51,7 @@ export CURRENT_FIGMA_TOKEN=figd_your_token
 npx @usepolder/current figma list      # prints every component with its node id
 ```
 
-Answers for the metrics that cannot be automated go in `.current.answers.yml`, committed alongside your code as the audit trail.
+Answers for the metrics that cannot be automated go in `.polder.answers.yml`, committed alongside your code as the audit trail.
 
 ## Options
 

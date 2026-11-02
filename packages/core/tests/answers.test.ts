@@ -65,7 +65,7 @@ Badge:
       thrown = err;
     }
     expect(thrown).toBeInstanceOf(ParseError);
-    expect((thrown as Error).message).toContain('.current.answers.yml:');
+    expect((thrown as Error).message).toContain('.polder.answers.yml:');
   });
 
   it('rejects a list where a mapping belongs', () => {

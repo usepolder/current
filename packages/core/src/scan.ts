@@ -346,7 +346,7 @@ function scoreComponent(
         guideline: metric.guideline,
         answer: 'N/A',
         source: 'unanswered',
-        evidence: 'manual metric with no answer in .current.answers.yml',
+        evidence: 'manual metric with no answer in .polder.answers.yml',
       });
       continue;
     }

@@ -86,6 +86,21 @@ describe('design token checks', () => {
     ).toBe('N/A');
   });
 
+  // Figma reports a bound weight/style as `fontStyle`, not `fontWeight`.
+  it('counts a text layer binding only fontStyle as tokenised', () => {
+    const node = component({
+      children: [
+        {
+          id: '1:2',
+          name: 'Label',
+          type: 'TEXT',
+          boundVariables: { fontStyle: { type: 'VARIABLE_ALIAS', id: 'VariableID:2' } },
+        },
+      ],
+    });
+    expect(DESIGN_CHECKS['design.type-tokens']({ componentName: 'B', node }).answer).toBe('Yes');
+  });
+
   it('checks spacing tokens only on auto-layout frames with real spacing', () => {
     const spaced = component({ layoutMode: 'HORIZONTAL', itemSpacing: 8 });
     expect(DESIGN_CHECKS['design.spacing-tokens']({ componentName: 'B', node: spaced }).answer).toBe(
@@ -109,6 +124,55 @@ describe('design token checks', () => {
     expect(
       DESIGN_CHECKS['design.radius-tokens']({ componentName: 'B', node: rounded }).answer,
     ).toBe('No');
+  });
+
+  // Figma reports a bound radius under `rectangleCornerRadii`, holding the
+  // per-corner aliases. Reading only the singular names made every tokenised
+  // component answer No with the evidence "raw values only".
+  it('counts a radius bound under rectangleCornerRadii as bound', () => {
+    const node = component({
+      cornerRadius: 4,
+      boundVariables: {
+        rectangleCornerRadii: {
+          RECTANGLE_TOP_LEFT_CORNER_RADIUS: { type: 'VARIABLE_ALIAS', id: 'VariableID:1' },
+          RECTANGLE_TOP_RIGHT_CORNER_RADIUS: { type: 'VARIABLE_ALIAS', id: 'VariableID:1' },
+        },
+      },
+    });
+    const r = DESIGN_CHECKS['design.radius-tokens']({ componentName: 'B', node });
+    expect(r.answer).toBe('Yes');
+    expect(r.evidence).toContain('bind radius tokens');
+  });
+
+  // A node with per-corner radii carries no scalar `cornerRadius`, so the old
+  // `applies` predicate skipped it and a fully tokenised component came back
+  // N/A, claiming no layer used a radius at all.
+  it('treats a bound radius as proof the node uses a radius, with no scalar cornerRadius', () => {
+    const node = component({
+      boundVariables: {
+        rectangleCornerRadii: {
+          RECTANGLE_TOP_LEFT_CORNER_RADIUS: { type: 'VARIABLE_ALIAS', id: 'VariableID:1' },
+        },
+      },
+    });
+    const r = DESIGN_CHECKS['design.radius-tokens']({ componentName: 'B', node });
+    expect(r.answer).toBe('Yes');
+    expect(r.evidence).not.toContain('no layers');
+  });
+
+  it('still reports the raw-value ratio when only some layers bind a radius', () => {
+    const bound = component({
+      id: '1:2',
+      cornerRadius: 4,
+      boundVariables: { rectangleCornerRadii: { RECTANGLE_TOP_LEFT_CORNER_RADIUS: { id: 'V:1' } } },
+    });
+    const raw = component({ id: '1:3', cornerRadius: 8 });
+    const r = DESIGN_CHECKS['design.radius-tokens']({
+      componentName: 'B',
+      node: component({ cornerRadius: 4, children: [bound, raw] }),
+    });
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('of 3 layer(s) use raw radius tokens');
   });
 });
 

@@ -74,7 +74,16 @@ export function checkColorTokens(facts: DesignFacts): CheckResult {
 export function checkTypeTokens(facts: DesignFacts): CheckResult {
   return tokenCheck(facts.node, {
     label: 'typography tokens',
-    boundVariableKeys: ['fontSize', 'fontFamily', 'fontWeight', 'lineHeight', 'letterSpacing'],
+    // `fontStyle` is how Figma reports a bound weight/style; `fontWeight` is
+    // accepted too but the REST API has not been observed using it.
+    boundVariableKeys: [
+      'fontSize',
+      'fontFamily',
+      'fontStyle',
+      'fontWeight',
+      'lineHeight',
+      'letterSpacing',
+    ],
     styleKeys: ['text'],
     applies: (n) => n.type === 'TEXT',
   });
@@ -101,18 +110,36 @@ export function checkSpacingTokens(facts: DesignFacts): CheckResult {
   });
 }
 
+/**
+ * The keys Figma reports a bound corner radius under.
+ *
+ * `rectangleCornerRadii` is the one the REST API actually uses when a radius is
+ * bound to a variable — it holds the per-corner aliases
+ * (`RECTANGLE_TOP_LEFT_CORNER_RADIUS` and friends). The singular names are kept
+ * because a scalar binding is cheap to accept and costs nothing if it never
+ * appears.
+ */
+const RADIUS_BOUND_KEYS = [
+  'cornerRadius',
+  'rectangleCornerRadii',
+  'topLeftRadius',
+  'topRightRadius',
+  'bottomLeftRadius',
+  'bottomRightRadius',
+] as const;
+
 /** DE5 — border radius tokens. */
 export function checkRadiusTokens(facts: DesignFacts): CheckResult {
   return tokenCheck(facts.node, {
     label: 'radius tokens',
-    boundVariableKeys: [
-      'cornerRadius',
-      'topLeftRadius',
-      'topRightRadius',
-      'bottomLeftRadius',
-      'bottomRightRadius',
-    ],
-    applies: (n) => typeof n.cornerRadius === 'number' && n.cornerRadius > 0,
+    boundVariableKeys: RADIUS_BOUND_KEYS,
+    // A node with per-corner radii carries no scalar `cornerRadius` at all —
+    // Figma omits the geometry and exposes only the binding — so binding a
+    // radius variable is itself proof the node uses a radius. Without this a
+    // fully tokenised component reports N/A, "no layers use radius tokens".
+    applies: (n) =>
+      (typeof n.cornerRadius === 'number' && n.cornerRadius > 0) ||
+      boundKeys(n).some((k) => (RADIUS_BOUND_KEYS as readonly string[]).includes(k)),
   });
 }
 

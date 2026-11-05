@@ -1,7 +1,7 @@
 {
   "name": "@usepolder/current",
   "version": "0.1.0",
-  "description": "Component health dashboard for design systems: one quadrant, code vs design, runs anywhere, holds nothing.",
+  "description": "Component health report for design systems: one quadrant, code vs design, runs anywhere, holds nothing.",
   "license": "Apache-2.0",
   "author": "Polder HQ",
   "homepage": "https://github.com/usepolder/current#readme",

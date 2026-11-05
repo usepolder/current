@@ -15,9 +15,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Node 24 ships npm 11; npm trusted publishing needs npm >=11.5.1 and
+      # Node >=22.14.0. ci.yml stays on 20, the floor `engines` declares.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
       - run: npm ci

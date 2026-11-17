@@ -8,9 +8,20 @@
  * check exists for that failure mode: silent by construction, invisible until
  * you go looking.
  *
- * For each repository it takes the highest semver tag and compares it with the
- * `latest` version of every package that repository publishes. A tag ahead of
- * npm means a release was cut that never arrived.
+ * There are two ways work stops reaching people, and they look nothing alike:
+ *
+ *   tagged but never published  — a release was cut and the publish failed.
+ *                                 This is what happened to Drift.
+ *   merged but never tagged     — the work is on the default branch and
+ *                                 nobody cut a release. This is what happened
+ *                                 to `current init` and `current export`,
+ *                                 which sat on main while npm served a
+ *                                 version that predated both.
+ *
+ * The first is caught by comparing the highest semver tag against npm. The
+ * second needs the version in the default branch's package.json, because
+ * there is no tag to compare. An earlier version of this script watched only
+ * the first and would have missed the second entirely.
  *
  * Needs no credentials: GitHub's API serves public repositories unauthenticated
  * and the npm registry is public. GITHUB_TOKEN is used when present only to
@@ -18,9 +29,24 @@
  */
 
 const FLEET = [
-  { repo: 'usepolder/current', packages: ['@usepolder/current', '@usepolder/current-core'] },
-  { repo: 'usepolder/drift', packages: ['@usepolder/drift'] },
-  { repo: 'usepolder/reach', packages: ['@usepolder/reach', '@usepolder/core'] },
+  {
+    repo: 'usepolder/current',
+    packages: [
+      { name: '@usepolder/current', manifest: 'packages/current-cli/package.json' },
+      { name: '@usepolder/current-core', manifest: 'packages/core/package.json' },
+    ],
+  },
+  {
+    repo: 'usepolder/drift',
+    packages: [{ name: '@usepolder/drift', manifest: 'package.json' }],
+  },
+  {
+    repo: 'usepolder/reach',
+    packages: [
+      { name: '@usepolder/reach', manifest: 'packages/reach-cli/package.json' },
+      { name: '@usepolder/core', manifest: 'packages/core/package.json' },
+    ],
+  },
 ];
 
 /**
@@ -104,13 +130,89 @@ export function assess({ repo, pkg, tag, npm, now = Date.now(), graceMs = GRACE_
   };
 }
 
+/** The version in a manifest on the default branch, and when it last changed. */
+export async function manifestVersion(repo, manifestPath, fetchJson = getJson) {
+  let doc;
+  try {
+    doc = await fetchJson(
+      `https://api.github.com/repos/${repo}/contents/${manifestPath}`,
+      ghHeaders,
+    );
+  } catch {
+    return null; // manifest moved or renamed: say nothing rather than guess
+  }
+  const raw = Buffer.from(doc.content ?? '', 'base64').toString('utf8');
+  let version;
+  try {
+    version = JSON.parse(raw).version;
+  } catch {
+    return null;
+  }
+  const parsed = parse(String(version ?? ''));
+  if (parsed === null) return null;
+
+  let bumpedAt = null;
+  try {
+    const commits = await fetchJson(
+      `https://api.github.com/repos/${repo}/commits?path=${encodeURIComponent(manifestPath)}&per_page=1`,
+      ghHeaders,
+    );
+    const iso = commits[0]?.commit?.committer?.date ?? commits[0]?.commit?.author?.date;
+    if (iso) bumpedAt = Date.parse(iso);
+  } catch {
+    // leave bumpedAt null; assess reports it as unknown rather than failing
+  }
+  return { raw: String(version), version: parsed, bumpedAt };
+}
+
+/**
+ * The second silence: the default branch is ahead of npm and no tag exists for
+ * it, so nobody cut a release at all.
+ *
+ * Only reported when there is no matching tag. If the tag exists, this is the
+ * tagged-but-unpublished case and `assess` already says so — reporting both
+ * would double-count one problem.
+ */
+export function assessUnreleased({
+  pkg,
+  manifest,
+  npm,
+  tag,
+  now = Date.now(),
+  graceMs = GRACE_MS,
+}) {
+  if (manifest === null) return { level: 'skip', text: `${pkg}: no readable manifest` };
+  if (npm === null || npm.version === null) return { level: 'skip', text: `${pkg}: not published` };
+  if (compare(manifest.version, npm.version) <= 0) return { level: 'ok', text: '' };
+
+  // A tag for this exact version means the release was cut; that is assess's
+  // problem, not this one.
+  if (tag !== null && compare(tag.version, manifest.version) >= 0) {
+    return { level: 'ok', text: '' };
+  }
+
+  const age = manifest.bumpedAt === null ? null : now - manifest.bumpedAt;
+  if (age !== null && age < graceMs) {
+    return { level: 'pending', text: `${pkg}: ${manifest.raw} on the default branch, npm on ${npm.raw}` };
+  }
+  const days = age === null ? 'unknown' : Math.floor(age / 86400000);
+  return {
+    level: 'fail',
+    text: `${pkg}: ${manifest.raw} is on the default branch but npm has ${npm.raw} — bumped ${days} day(s) ago and never tagged`,
+  };
+}
+
 async function main() {
   const results = [];
   for (const { repo, packages } of FLEET) {
     const tag = await latestTag(repo);
-    for (const pkg of packages) {
-      const npm = await npmLatest(pkg);
-      results.push(assess({ repo, pkg, tag, npm }));
+    for (const { name, manifest: manifestPath } of packages) {
+      const npm = await npmLatest(name);
+      results.push(assess({ repo, pkg: name, tag, npm }));
+
+      const manifest = await manifestVersion(repo, manifestPath);
+      const unreleased = assessUnreleased({ pkg: name, manifest, npm, tag });
+      if (unreleased.level !== 'ok') results.push(unreleased);
     }
   }
 
@@ -121,7 +223,7 @@ async function main() {
   if (failures.length > 0) {
     console.log('');
     for (const f of failures) console.log(`::error::${f.text}`);
-    console.log(`\n${failures.length} package(s) have a tag that never reached npm.`);
+    console.log(`\n${failures.length} package(s) have work that never reached npm.`);
     process.exit(1);
   }
   console.log('\nEvery repository’s newest tag is published.');

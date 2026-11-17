@@ -1,6 +1,7 @@
 import {
   QUADRANT_LABELS,
   axesNotFullyCovered,
+  fixFirst,
   type ComponentResult,
   type CurrentReport,
   type HistoryEntry,
@@ -273,6 +274,9 @@ function scoreCell(axis: { score: number | null; degraded: boolean }): string {
 
 function componentRows(report: CurrentReport): string {
   const badgeUnmapped = sidesWorthBadging(report.components);
+  // No usage data means no Uses/Priority columns at all, rather than two
+  // columns of em dashes implying the numbers were measured and came back empty.
+  const weighted = report.usage !== null;
   return report.components
     .map((c) => {
       // Every axis, not just the plotted two: a thin documentation score
@@ -323,10 +327,20 @@ function componentRows(report: CurrentReport): string {
               c.quadrant === null
                 ? '<span class="muted">not plotted</span>'
                 : `<span class="pill pill-${c.quadrant}">${QUADRANT_LABELS[c.quadrant]}</span>`
-            }</td>
+            }</td>${
+              !weighted
+                ? ''
+                : `
+            <td class="num" data-sort="${c.usage ?? -1}">${c.usage ?? '—'}</td>
+            <td class="num" data-sort="${c.priority ?? -1}">${
+              c.priority === null
+                ? '<span class="muted" title="No code or design score, so there is nothing to weight">—</span>'
+                : c.priority.toFixed(1)
+            }</td>`
+            }
           </tr>
           <tr class="detail-row" id="detail-${escapeHtml(c.name)}" hidden>
-            <td colspan="5">
+            <td colspan="${weighted ? 7 : 5}">
               <table class="metrics">
                 <thead><tr><th>ID</th><th>Guideline</th><th>Answer</th><th>Source</th><th>Why</th></tr></thead>
                 <tbody>
@@ -360,6 +374,74 @@ function srTable(report: CurrentReport): string {
  * 31 components is a different claim from one over all 31, and the reader
  * cannot tell them apart from the number alone.
  */
+/**
+ * The ranked answer to "what do we fix this week", in the artifact people
+ * actually share.
+ *
+ * Deliberately the same `fixFirst` entries, the same cut (in use and below the
+ * threshold) and the same top-three unmapped names as the terminal summary and
+ * the PR comment, so the four surfaces cannot disagree about what is urgent.
+ *
+ * Absent entirely without usage data, rather than rendering empty: a card
+ * saying nothing is urgent would read as a computed result, when in fact
+ * nothing was weighted.
+ */
+function fixFirstCard(report: CurrentReport): string {
+  if (report.usage === null) return '';
+  const first = fixFirst(report);
+  const unmatched = report.usage.unmatched;
+  const top = unmatched.slice(0, 3);
+
+  const body =
+    first.length === 0
+      ? `<p class="note">Nothing in use is below the ${report.threshold}% threshold.</p>`
+      : `<div class="scroller">
+    <table class="fixfirst">
+      <thead>
+        <tr>
+          <th class="rank">#</th><th>Component</th><th class="num">Uses</th>
+          <th class="num">Share</th><th class="num">Priority</th>
+        </tr>
+      </thead>
+      <tbody>${first
+        .map(
+          (e, i) =>
+            `<tr>` +
+            `<td class="rank">${i + 1}</td>` +
+            `<td><span class="name">${escapeHtml(e.name)}</span> ` +
+            `<span class="axis">${escapeHtml(e.axis)} ${e.score.toFixed(1)}%</span></td>` +
+            `<td class="num">${e.uses}</td>` +
+            `<td class="num">${e.share === null ? '—' : `${e.share.toFixed(1)}%`}</td>` +
+            `<td class="num">${e.priority.toFixed(1)}</td>` +
+            `</tr>`,
+        )
+        .join('')}</tbody>
+    </table>
+    </div>`;
+
+  return `<section class="card">
+    <h2>Fix first</h2>
+    <p class="note">Weakest of code and design, weighted by use. Documentation is left out:
+    a thin doc page is worth fixing but is not what makes a component urgent.</p>
+    ${body}
+    <p class="note">
+      priority = (100 − weakest axis) × uses ÷ uses of the busiest component.
+      Computed over ${report.usage.totalUses} component instance${
+        report.usage.totalUses === 1 ? '' : 's'
+      } Reach counted.
+      ${
+        top.length === 0
+          ? ''
+          : `In use but not mapped in .polder.yml: ${top
+              .map((u) => `${escapeHtml(u.name)} (${u.uses})`)
+              .join(', ')}${
+              unmatched.length > top.length ? `, +${unmatched.length - top.length} more` : ''
+            }.`
+      }
+    </p>
+  </section>`;
+}
+
 function excludedNote(report: CurrentReport): string {
   const parts = axesNotFullyCovered(report).map((b) => {
     const label = b.category === 'documentation' ? 'Docs' : b.category[0].toUpperCase() + b.category.slice(1);
@@ -455,6 +537,8 @@ h2 { font-size: 15px; margin: 0 0 14px; letter-spacing: 0.02em; text-transform: 
 /* Narrow viewports scroll the table instead of clipping the Quadrant column. */
 .scroller { overflow-x: auto; }
 .scroller > table { min-width: 620px; }
+/* Two more columns than the unweighted table, so it needs more room before scrolling. */
+.scroller > table.weighted { min-width: 820px; }
 .detail-row .metrics { min-width: 560px; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -483,6 +567,9 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
          background: var(--monitor); color: var(--monitor-ink); text-transform: lowercase; }
 .badge-missing, .badge-unavailable { background: var(--critical); color: var(--critical-ink); }
 .badge-low { background: var(--moderate); color: var(--moderate-ink); }
+.fixfirst .rank { color: var(--muted); font-variant-numeric: tabular-nums; width: 1%; }
+.fixfirst .name { font-weight: 600; }
+.fixfirst .axis { color: var(--muted); font-size: 13px; }
 .muted { color: var(--muted); }
 .note { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
 .warn { background: var(--critical); color: var(--critical-ink); border-radius: 10px; padding: 12px 14px; margin-bottom: 20px; font-size: 14px; }
@@ -526,6 +613,8 @@ footer a { color: inherit; }
     <div class="stat"><div class="k">Components</div><div class="v">${report.components.length}</div></div>
   </div>
   ${excludedNote(report)}
+
+  ${fixFirstCard(report)}
 
   <section class="card">
     <h2>Code vs design health</h2>
@@ -573,14 +662,20 @@ footer a { color: inherit; }
   <section class="card">
     <h2>Every component</h2>
     <div class="scroller">
-    <table id="components">
+    <table id="components"${report.usage === null ? '' : ' class="weighted"'}>
       <thead>
         <tr>
           <th class="sortable" data-col="0">Component</th>
           <th class="sortable num" data-col="1">Code</th>
           <th class="sortable num" data-col="2">Design</th>
           <th class="sortable num" data-col="3">Docs</th>
-          <th class="sortable" data-col="4">Quadrant</th>
+          <th class="sortable" data-col="4">Quadrant</th>${
+            report.usage === null
+              ? ''
+              : `
+          <th class="sortable num" data-col="5">Uses</th>
+          <th class="sortable num" data-col="6">Priority</th>`
+          }
         </tr>
       </thead>
       <tbody>

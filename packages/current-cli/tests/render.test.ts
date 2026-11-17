@@ -33,15 +33,23 @@ function figma(): FigmaClient {
   });
 }
 
-async function fixtureReport(): Promise<CurrentReport> {
+async function fixtureReport(usage?: ReadonlyMap<string, number>): Promise<CurrentReport> {
   return scanRepo({
     repoRoot: FIXTURE,
     config: parseConfig(fs.readFileSync(path.join(FIXTURE, '.polder.yml'), 'utf8')),
     answers: parseAnswers(fs.readFileSync(path.join(FIXTURE, '.polder.answers.yml'), 'utf8')),
     figma: figma(),
+    usage,
     now: () => new Date('2026-01-01T00:00:00.000Z'),
   });
 }
+
+/** Ghost is weak, Button is strong; Orphan is used but unmapped. */
+const USAGE = new Map([
+  ['Button', 10],
+  ['Ghost', 2],
+  ['Orphan', 7],
+]);
 
 describe('escapeHtml', () => {
   it('escapes the characters that would break out of markup or an attribute', () => {
@@ -218,6 +226,60 @@ describe('renderReport', () => {
     const html = renderReport({ report: await fixtureReport() });
     expect(html).toContain('prefers-color-scheme: dark');
     expect(html).toContain('color-scheme: light dark');
+  });
+});
+
+describe('renderReport with usage', () => {
+  it('ranks what to fix first in the artifact people share', async () => {
+    const html = renderReport({ report: await fixtureReport(USAGE) });
+    const card = /<h2>Fix first<\/h2>([\s\S]*?)<\/section>/.exec(html);
+    expect(card).not.toBeNull();
+    // Ghost is below the threshold and in use, so it is the thing to do.
+    expect(card![1]).toContain('Ghost');
+    expect(card![1]).toContain('>2<');
+    // Button is in heavier use but is not broken, so it is not on the list.
+    expect(card![1]).not.toContain('Button');
+  });
+
+  it('says what the ranking was computed over, like every other surface', async () => {
+    const html = renderReport({ report: await fixtureReport(USAGE) });
+    expect(html).toContain('Computed over 19 component instances Reach counted');
+    expect(html).toContain('priority = (100 − weakest axis) × uses ÷ uses of the busiest component');
+  });
+
+  it('names a used component that nothing in the config maps', async () => {
+    const html = renderReport({ report: await fixtureReport(USAGE) });
+    expect(html).toContain('In use but not mapped in .polder.yml: Orphan (7)');
+  });
+
+  it('adds sortable Uses and Priority columns the detail row spans', async () => {
+    const html = renderReport({ report: await fixtureReport(USAGE) });
+    expect(html).toContain('<th class="sortable num" data-col="5">Uses</th>');
+    expect(html).toContain('<th class="sortable num" data-col="6">Priority</th>');
+    // The disclosure row has to span the two new columns or the table breaks.
+    expect(html).toContain('colspan="7"');
+    expect(html).not.toContain('colspan="5"');
+  });
+
+  it('shows a zero for a mapped component Reach never saw, not a dash', async () => {
+    const html = renderReport({ report: await fixtureReport(USAGE) });
+    const row = /<tr class="component-row" data-component="Wrapper">[\s\S]*?<\/tr>/.exec(html);
+    expect(row).not.toBeNull();
+    expect(row![0]).toContain('data-sort="0"');
+  });
+
+  it('omits the card and both columns entirely without usage data', async () => {
+    const html = renderReport({ report: await fixtureReport() });
+    expect(html).not.toContain('Fix first');
+    expect(html).not.toContain('data-col="5"');
+    expect(html).not.toContain('class="weighted"');
+    expect(html).toContain('colspan="5"');
+  });
+
+  it('says so plainly when nothing in use is below the threshold', async () => {
+    const html = renderReport({ report: await fixtureReport(new Map([['Button', 10]])) });
+    expect(html).toContain('<h2>Fix first</h2>');
+    expect(html).toContain('Nothing in use is below the 60% threshold.');
   });
 });
 

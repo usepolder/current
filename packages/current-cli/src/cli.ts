@@ -3,6 +3,7 @@ import * as path from 'path';
 import {
   CurrentError,
   FigmaClient,
+  collectComponents,
   TOKEN_ENV_VAR,
   appendHistory,
   closeRenderer,
@@ -18,10 +19,18 @@ import {
   resolveUsageFile,
   scanRepo,
   type AnswerBook,
+  type FigmaComponentSummary,
   type CurrentConfig,
   type CurrentReport,
 } from '@usepolder/current-core';
 import { figmaList } from './figma-list';
+import {
+  discoverComponents,
+  mergeIntoConfig,
+  planComponents,
+  renderCurrentBlock,
+  writeAtomic,
+} from './init';
 import { renderReport } from './render';
 import { renderTerminal } from './terminal';
 
@@ -30,7 +39,7 @@ export const ANSWERS_FILE = '.polder.answers.yml';
 export const DEFAULT_REPORT_FILE = 'current-report.html';
 
 export interface CliArgs {
-  command: 'scan' | 'figma-list' | 'help' | 'version';
+  command: 'scan' | 'figma-list' | 'init' | 'help' | 'version';
   dir: string;
   json: boolean;
   verbose: boolean;
@@ -38,12 +47,14 @@ export interface CliArgs {
   usage: string | null;
   noReport: boolean;
   recordHistory: boolean;
+  /** `init --figma <key>`: the Figma file to match component names against. */
+  figmaFileKey: string | null;
 }
 
 /**
  * Names that are never read as a directory.
  *
- * `scan` and `figma` are implemented; `init` and `answer` are not yet. They
+ * `scan`, `figma` and `init` are implemented; `answer` is not yet. They
  * are reserved anyway, because the alternative is worse in both directions:
  * `current init` used to fall through to the positional argument and silently
  * scan a directory called `init`, and once the command does land, the same
@@ -52,8 +63,8 @@ export interface CliArgs {
  *
  * A real directory with one of these names is still reachable: `current -- init`.
  */
-const IMPLEMENTED_COMMANDS = ['scan', 'figma'] as const;
-const PLANNED_COMMANDS = ['init', 'answer'] as const;
+const IMPLEMENTED_COMMANDS = ['scan', 'figma', 'init'] as const;
+export const PLANNED_COMMANDS: readonly string[] = ['answer'];
 
 export const RESERVED_COMMANDS: readonly string[] = [
   ...IMPLEMENTED_COMMANDS,
@@ -70,6 +81,7 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     usage: null,
     noReport: false,
     recordHistory: false,
+    figmaFileKey: null,
   };
 
   const rest = [...argv];
@@ -86,7 +98,10 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     rest.splice(0, 2);
   } else if (rest[0] === 'scan') {
     rest.splice(0, 1);
-  } else if (rest[0] !== undefined && (PLANNED_COMMANDS as readonly string[]).includes(rest[0])) {
+  } else if (rest[0] === 'init') {
+    args.command = 'init';
+    rest.splice(0, 1);
+  } else if (rest[0] !== undefined && PLANNED_COMMANDS.includes(rest[0])) {
     throw new CurrentError(
       `\`${rest[0]}\` is not a command in this version of current.\n` +
         `To scan a directory named ${rest[0]}, write: current -- ${rest[0]}`,
@@ -125,6 +140,11 @@ export function parseArgs(argv: readonly string[]): CliArgs {
       if (value === undefined) throw new CurrentError('--out requires a file path');
       args.out = value;
       i += 1;
+    } else if (a === '--figma') {
+      const value = rest[i + 1];
+      if (value === undefined) throw new CurrentError('--figma requires a Figma file key');
+      args.figmaFileKey = value;
+      i += 1;
     } else if (a === '--usage') {
       const value = rest[i + 1];
       if (value === undefined) throw new CurrentError('--usage requires a Reach JSON report path');
@@ -145,10 +165,12 @@ export const HELP = `current — component health for design systems
 Usage
   npx @usepolder/current [dir] [options]
   npx @usepolder/current scan [dir] [options]
+  npx @usepolder/current init [dir] [--figma <file-key>]
   npx @usepolder/current figma list [dir]
 
 Options
   --json             Print the full report as JSON instead of a summary
+  --figma <key>      init only: match component names against this Figma file
   --out <file>       Where to write the HTML report (default ${DEFAULT_REPORT_FILE})
   --usage <file>     Reach JSON report; ranks what to fix first by how much each component is used
                      (or set \`usage:\` under \`current:\` in ${CONFIG_FILE})
@@ -160,14 +182,16 @@ Options
 
 Reserved names
   ${RESERVED_COMMANDS.join(', ')} are read as commands, never as a directory.
-  init and answer are reserved but not implemented yet. To scan a directory
-  with one of those names, put it after --:  current -- init
+  answer is reserved but not implemented yet. To scan a directory with one of
+  those names, put it after --:  current -- init
 
 Setup
-  1. Create ${CONFIG_FILE} with a current: block mapping each component
-     to its code path and Figma node id. Shared with Drift and Reach.
-  2. export ${TOKEN_ENV_VAR}=<your Figma personal access token>
-  3. Run \`current figma list\` to get node ids for the mapping.
+  1. export ${TOKEN_ENV_VAR}=<your Figma personal access token>
+  2. Run \`current init --figma <file-key>\` to scaffold ${CONFIG_FILE} from
+     your source and that Figma file. It never overwrites an existing
+     current: block, and leaves uncertain matches commented out for you to
+     confirm. ${CONFIG_FILE} is shared with Drift and Reach.
+  3. Review it, then run \`current\`.
 
 Answers for metrics that cannot be automated go in ${ANSWERS_FILE}.
 Nothing is sent anywhere except the Figma API you configure.`;
@@ -216,6 +240,69 @@ function buildFigmaClient(
   });
 }
 
+/**
+ * Scaffold the `current:` block from what is on disk, and from Figma when a
+ * file key is given.
+ *
+ * Everything is computed before anything is written, so a Figma walk that
+ * fails partway leaves no half-built config behind.
+ */
+async function runInit(
+  dir: string,
+  args: CliArgs,
+  io: RunIo,
+  logger: ReturnType<typeof createLogger>,
+): Promise<string> {
+  const configPath = path.join(dir, CONFIG_FILE);
+  const existing = readFileIfExists(configPath);
+
+  // Refuse an existing current: block before doing any work, so the refusal is
+  // instant rather than arriving after a minute of Figma paging.
+  if (existing !== null) mergeIntoConfig(existing, '');
+
+  const code = discoverComponents(dir);
+  logger.trace(`init: ${code.length} component source file(s) found`);
+
+  let figma: FigmaComponentSummary[] = [];
+  if (args.figmaFileKey !== null) {
+    const token = io.env[TOKEN_ENV_VAR];
+    if (token === undefined || token.trim() === '') {
+      throw new CurrentError(
+        `$${TOKEN_ENV_VAR} is not set, so --figma has nothing to authenticate with.\n` +
+          `  export ${TOKEN_ENV_VAR}=figd_...`,
+      );
+    }
+    const client = new FigmaClient({ token: token.trim(), fileKey: args.figmaFileKey, logger });
+    figma = collectComponents(await client.fetchFile());
+    logger.trace(`init: ${figma.length} Figma component(s) found`);
+  }
+
+  const plan = planComponents(code, figma);
+  const block = renderCurrentBlock(plan, args.figmaFileKey);
+  writeAtomic(configPath, mergeIntoConfig(existing, block));
+
+  const exact = plan.filter((c) => c.match === 'exact').length;
+  const unsure = plan.filter((c) => c.match === 'fuzzy' || c.match === 'ambiguous').length;
+  const unmatched = plan.filter((c) => c.match === 'none').length;
+
+  const where = displayPath(configPath, io.cwd ?? process.cwd());
+  const lines = [
+    `${existing === null ? 'Wrote' : 'Added a current: block to'} ${where}`,
+    `  ${plan.length} component${plan.length === 1 ? '' : 's'} from source`,
+  ];
+  if (args.figmaFileKey === null) {
+    lines.push('  no Figma file given - add figma.file_key, then run `current figma list`');
+  } else {
+    lines.push(`  ${exact} mapped to Figma`);
+    if (unsure > 0) {
+      lines.push(`  ${unsure} left commented out: confirm the name before trusting them`);
+    }
+    if (unmatched > 0) lines.push(`  ${unmatched} with no Figma match`);
+  }
+  lines.push('', 'Review it, then run `current` to score.');
+  return lines.join('\n');
+}
+
 export interface RunIo {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
@@ -247,6 +334,11 @@ export async function run(argv: readonly string[], io: RunIo): Promise<number> {
   const logger = createLogger(args.verbose, (line) => io.stderr(`${line}\n`));
 
   try {
+    if (args.command === 'init') {
+      io.stdout(`${await runInit(dir, args, io, logger)}\n`);
+      return 0;
+    }
+
     const { config } = loadConfig(dir);
 
     if (args.command === 'figma-list') {

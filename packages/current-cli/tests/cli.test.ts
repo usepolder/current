@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { HELP, RESERVED_COMMANDS, parseArgs, run } from '../src/index';
+import { HELP, PLANNED_COMMANDS, RESERVED_COMMANDS, parseArgs, run } from '../src/index';
 
 const FIXTURE = path.join(__dirname, '..', '..', 'core', 'tests', 'fixtures', 'ds');
 
@@ -100,15 +100,20 @@ describe('parseArgs reserved commands', () => {
   // The bug: every one of these used to be read as a directory to scan, so
   // `current init` scanned ./init, found no config, and exited without ever
   // saying that `init` is not a command.
-  it.each([...RESERVED_COMMANDS].filter((c) => c !== 'scan' && c !== 'figma'))(
-    'refuses to read the reserved name %s as a directory',
-    (name) => {
-      expect(() => parseArgs([name])).toThrow(/is not a command in this version/);
-    },
-  );
+  // Driven by PLANNED_COMMANDS rather than a hand-written list, so a name
+  // graduating from planned to implemented updates this test instead of
+  // breaking it, and a newly planned name is covered the day it is added.
+  it.each([...PLANNED_COMMANDS])('refuses to read the reserved name %s as a directory', (name) => {
+    expect(() => parseArgs([name])).toThrow(/is not a command in this version/);
+  });
 
   it('names the -- escape in the error, so the message is actionable', () => {
-    expect(() => parseArgs(['init'])).toThrow(/current -- init/);
+    const planned = PLANNED_COMMANDS[0];
+    expect(() => parseArgs([planned])).toThrow(new RegExp(`current -- ${planned}`));
+  });
+
+  it('reads an implemented reserved name as its command, not as a directory', () => {
+    expect(parseArgs(['init'])).toMatchObject({ command: 'init', dir: '.' });
   });
 
   it('reads a reserved name as a directory after --', () => {

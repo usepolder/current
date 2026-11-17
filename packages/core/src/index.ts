@@ -69,10 +69,13 @@ export {
   isDocsUrl,
   createPlaywrightRenderer,
   closeRenderer,
+  renderDocsPages,
+  DEFAULT_DOCS_CONCURRENCY,
   RendererUnavailableError,
   RENDERER_INSTALL_HINT,
   type PageRenderer,
   type RendererOptions,
+  type RenderedPage,
 } from './docs-source';
 export {
   FigmaClient,

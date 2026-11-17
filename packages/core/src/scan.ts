@@ -4,7 +4,12 @@ import { lookupAnswer, type AnswerBook } from './answers';
 import { CODE_CHECKS, type CheckResult, type CodeFacts } from './code-checks';
 import { resolveComponentPaths, type CurrentConfig } from './config';
 import { checkDocSection, extractHeadings, extractHtmlHeadings, type DocsFacts } from './docs-checks';
-import { isDocsUrl, type PageRenderer } from './docs-source';
+import {
+  isDocsUrl,
+  renderDocsPages,
+  type PageRenderer,
+  type RenderedPage,
+} from './docs-source';
 import { FigmaError, NoComponentsError } from './errors';
 import { DESIGN_CHECKS, figmaPropertyNames, type DesignFacts } from './figma-checks';
 import type { FigmaClient, FigmaNode } from './figma-client';
@@ -55,6 +60,8 @@ export interface ScanOptions {
    * priority — nothing is weighted by a guess.
    */
   usage?: UsageMap | null;
+  /** How many docs pages to render at once. Defaults to a small cap. */
+  docsConcurrency?: number;
   now?: () => Date;
 }
 
@@ -114,6 +121,19 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
     figmaUnavailable = `No Figma token provided; design metrics were not evaluated.`;
   }
 
+  // Rendered up front, a few at a time, rather than one page per iteration of
+  // the loop below: see renderDocsPages. The loop itself now awaits nothing.
+  let docsPages = new Map<string, RenderedPage>();
+  if (opts.renderDocs !== undefined && opts.renderDocs !== null) {
+    const urls = [...resolvedPaths.values()]
+      .map((p) => p.docs)
+      .filter((d): d is string => d !== null && isDocsUrl(d));
+    docsPages = await renderDocsPages(urls, opts.renderDocs, {
+      ...(opts.docsConcurrency === undefined ? {} : { concurrency: opts.docsConcurrency }),
+      logger,
+    });
+  }
+
   const loaded: LoadedComponent[] = [];
   for (const mapping of config.components) {
     const paths = resolvedPaths.get(mapping.name)!;
@@ -138,7 +158,7 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
       logger.trace(`${mapping.name}: code file missing at ${mapping.code}`);
     }
 
-    const docs = await loadDocs(mapping.name, paths.docs, opts, logger);
+    const docs = loadDocs(mapping.name, paths.docs, opts, docsPages, logger);
 
     loaded.push({
       name: mapping.name,
@@ -250,12 +270,13 @@ function applyUsage(
  * them would mark a well-documented system as undocumented the moment a
  * renderer is missing or a site is down.
  */
-async function loadDocs(
+function loadDocs(
   component: string,
   docs: string | null,
   opts: ScanOptions,
+  pages: ReadonlyMap<string, RenderedPage>,
   logger: Logger,
-): Promise<{ headings: string[] | null; absence: DocsFacts['absence']; detail?: string }> {
+): { headings: string[] | null; absence: DocsFacts['absence']; detail?: string } {
   if (docs === null) return { headings: null, absence: 'unmapped' };
 
   if (!isDocsUrl(docs)) {
@@ -273,27 +294,35 @@ async function loadDocs(
     return { headings: null, absence: 'no-renderer' };
   }
 
-  try {
-    const html = await opts.renderDocs(docs);
-    const headings = extractHtmlHeadings(html);
-    if (headings.length === 0) {
-      // A hosted docs page with no headings at all is far more likely to be
-      // an incomplete render than a real page documenting nothing. Treat it
-      // as unread rather than scoring the component as undocumented.
-      logger.trace(`${component}: ${docs} returned no headings — treating as unread`);
-      return {
-        headings: null,
-        absence: 'unreadable',
-        detail: 'page returned no headings; it may not have finished rendering',
-      };
-    }
-    logger.trace(`${component}: ${headings.length} heading(s) from ${docs}`);
-    return { headings, absence: null };
-  } catch (err) {
-    const detail = (err as Error).message.split('\n')[0];
+  const page = pages.get(docs);
+  if (page === undefined) {
+    // Only reachable if the prefetch and this lookup disagree about which
+    // URLs exist. Report it as unread rather than as zero headings: a bug of
+    // ours must not read as a verdict about the user's documentation.
+    logger.trace(`${component}: ${docs} was never rendered`);
+    return { headings: null, absence: 'unreadable', detail: 'page was not rendered' };
+  }
+
+  if ('error' in page) {
+    const detail = page.error.split('\n')[0];
     logger.trace(`${component}: docs page failed — ${detail}`);
     return { headings: null, absence: 'unreadable', detail };
   }
+
+  const headings = extractHtmlHeadings(page.html);
+  if (headings.length === 0) {
+    // A hosted docs page with no headings at all is far more likely to be
+    // an incomplete render than a real page documenting nothing. Treat it
+    // as unread rather than scoring the component as undocumented.
+    logger.trace(`${component}: ${docs} returned no headings — treating as unread`);
+    return {
+      headings: null,
+      absence: 'unreadable',
+      detail: 'page returned no headings; it may not have finished rendering',
+    };
+  }
+  logger.trace(`${component}: ${headings.length} heading(s) from ${docs}`);
+  return { headings, absence: null };
 }
 
 function scoreComponent(

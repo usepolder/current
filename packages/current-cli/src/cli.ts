@@ -40,6 +40,26 @@ export interface CliArgs {
   recordHistory: boolean;
 }
 
+/**
+ * Names that are never read as a directory.
+ *
+ * `scan` and `figma` are implemented; `init` and `answer` are not yet. They
+ * are reserved anyway, because the alternative is worse in both directions:
+ * `current init` used to fall through to the positional argument and silently
+ * scan a directory called `init`, and once the command does land, the same
+ * invocation would quietly start meaning something else. Reserving the name
+ * up front makes that impossible and makes the gap visible today.
+ *
+ * A real directory with one of these names is still reachable: `current -- init`.
+ */
+const IMPLEMENTED_COMMANDS = ['scan', 'figma'] as const;
+const PLANNED_COMMANDS = ['init', 'answer'] as const;
+
+export const RESERVED_COMMANDS: readonly string[] = [
+  ...IMPLEMENTED_COMMANDS,
+  ...PLANNED_COMMANDS,
+];
+
 export function parseArgs(argv: readonly string[]): CliArgs {
   const args: CliArgs = {
     command: 'scan',
@@ -53,16 +73,48 @@ export function parseArgs(argv: readonly string[]): CliArgs {
   };
 
   const rest = [...argv];
-  if (rest[0] === 'figma' && rest[1] === 'list') {
+  if (rest[0] === 'figma') {
+    if (rest[1] !== 'list') {
+      // `figma` on its own used to become the directory to scan.
+      throw new CurrentError(
+        rest[1] === undefined
+          ? '`figma` needs a subcommand. The only one is `figma list`.'
+          : `Unknown figma subcommand: ${rest[1]}. The only one is \`figma list\`.`,
+      );
+    }
     args.command = 'figma-list';
     rest.splice(0, 2);
   } else if (rest[0] === 'scan') {
     rest.splice(0, 1);
+  } else if (rest[0] !== undefined && (PLANNED_COMMANDS as readonly string[]).includes(rest[0])) {
+    throw new CurrentError(
+      `\`${rest[0]}\` is not a command in this version of current.\n` +
+        `To scan a directory named ${rest[0]}, write: current -- ${rest[0]}`,
+    );
   }
+
+  // Everything after a bare `--` is positional, so a directory can be named
+  // after a flag or a reserved command.
+  let positionalsOnly = false;
+  let positionals = 0;
+
+  const takePositional = (a: string): void => {
+    positionals += 1;
+    if (positionals > 1) {
+      throw new CurrentError(
+        `Unexpected extra argument: ${a}. current scans one directory at a time.`,
+      );
+    }
+    args.dir = a;
+  };
 
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
-    if (a === '--json') args.json = true;
+    if (positionalsOnly) {
+      takePositional(a);
+    } else if (a === '--') {
+      positionalsOnly = true;
+    } else if (a === '--json') args.json = true;
     else if (a === '--verbose' || a === '-v') args.verbose = true;
     else if (a === '--no-report') args.noReport = true;
     else if (a === '--record-history') args.recordHistory = true;
@@ -81,7 +133,7 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     } else if (a.startsWith('-')) {
       throw new CurrentError(`Unknown flag: ${a}`);
     } else {
-      args.dir = a;
+      takePositional(a);
     }
   }
 
@@ -92,6 +144,7 @@ export const HELP = `current — component health for design systems
 
 Usage
   npx @usepolder/current [dir] [options]
+  npx @usepolder/current scan [dir] [options]
   npx @usepolder/current figma list [dir]
 
 Options
@@ -104,6 +157,11 @@ Options
   --verbose, -v      Trace every metric's resolution to stderr
   --help, -h         Show this message
   --version          Print the version
+
+Reserved names
+  ${RESERVED_COMMANDS.join(', ')} are read as commands, never as a directory.
+  init and answer are reserved but not implemented yet. To scan a directory
+  with one of those names, put it after --:  current -- init
 
 Setup
   1. Create ${CONFIG_FILE} with a current: block mapping each component

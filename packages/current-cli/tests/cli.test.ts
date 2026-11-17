@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { HELP, parseArgs, run } from '../src/index';
+import { HELP, RESERVED_COMMANDS, parseArgs, run } from '../src/index';
 
 const FIXTURE = path.join(__dirname, '..', '..', 'core', 'tests', 'fixtures', 'ds');
 
@@ -11,13 +11,7 @@ const temps: string[] = [];
 function tempCopyOfFixture(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'current-cli-'));
   temps.push(dir);
-  // Skip .current/: that directory is the Action's *output*, and a dogfood run
-  // that persisted a badge or a history entry into the fixture must not decide
-  // what these tests see on a fresh copy.
-  fs.cpSync(FIXTURE, dir, {
-    recursive: true,
-    filter: (src) => !src.split(path.sep).includes('.current'),
-  });
+  fs.cpSync(FIXTURE, dir, { recursive: true });
   return dir;
 }
 
@@ -99,6 +93,52 @@ describe('parseArgs', () => {
 
   it('rejects an unknown flag by name', () => {
     expect(() => parseArgs(['--nope'])).toThrow(/Unknown flag: --nope/);
+  });
+});
+
+describe('parseArgs reserved commands', () => {
+  // The bug: every one of these used to be read as a directory to scan, so
+  // `current init` scanned ./init, found no config, and exited without ever
+  // saying that `init` is not a command.
+  it.each([...RESERVED_COMMANDS].filter((c) => c !== 'scan' && c !== 'figma'))(
+    'refuses to read the reserved name %s as a directory',
+    (name) => {
+      expect(() => parseArgs([name])).toThrow(/is not a command in this version/);
+    },
+  );
+
+  it('names the -- escape in the error, so the message is actionable', () => {
+    expect(() => parseArgs(['init'])).toThrow(/current -- init/);
+  });
+
+  it('reads a reserved name as a directory after --', () => {
+    expect(parseArgs(['--', 'init'])).toMatchObject({ command: 'scan', dir: 'init' });
+  });
+
+  it('stops reading flags after --', () => {
+    expect(parseArgs(['--', '--json'])).toMatchObject({ dir: '--json', json: false });
+  });
+
+  it('still parses flags before --', () => {
+    expect(parseArgs(['--json', '--', 'init'])).toMatchObject({ dir: 'init', json: true });
+  });
+
+  it('rejects figma with no subcommand instead of scanning ./figma', () => {
+    expect(() => parseArgs(['figma'])).toThrow(/needs a subcommand/);
+  });
+
+  it('rejects an unknown figma subcommand', () => {
+    expect(() => parseArgs(['figma', 'nope'])).toThrow(/Unknown figma subcommand: nope/);
+  });
+
+  it('rejects a second directory instead of silently using the last', () => {
+    expect(() => parseArgs(['one', 'two'])).toThrow(/Unexpected extra argument: two/);
+  });
+
+  it('documents every reserved name in the help text', () => {
+    for (const name of RESERVED_COMMANDS) {
+      expect(HELP).toContain(name);
+    }
   });
 });
 

@@ -7,6 +7,11 @@ lib/
 # Generated report output — never commit this into a consuming repo.
 current-report.html
 
+# Test fixtures are inputs and must stay pristine. A dogfood run pointed at
+# one would otherwise leave badge/history output behind for someone to commit,
+# which is exactly how the CLI history tests got a populated .current/ to copy.
+packages/core/tests/fixtures/*/.current/
+
 # Local editor / agent config.
 .claude/
 

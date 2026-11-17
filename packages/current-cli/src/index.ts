@@ -4,6 +4,7 @@ export {
   loadConfig,
   loadAnswers,
   HELP,
+  RESERVED_COMMANDS,
   CONFIG_FILE,
   ANSWERS_FILE,
   DEFAULT_REPORT_FILE,

@@ -82,6 +82,27 @@ That is deliberately the same arithmetic a spreadsheet audit uses, because the p
 
 About 20 of the 32 are checked automatically. (This is the default set; [you can change it](#your-own-norms).) The rest need a person, and Current does not pretend otherwise: it reads your answers for those from a file you own.
 
+That 20 is not spread evenly, and the axes are not equally trustworthy:
+
+| Axis | Automated | Checked against a human verdict? |
+| --- | --- | --- |
+| Code | 5 of 12 | **No.** Never, on any component. |
+| Design | 7 of 11 | Yes, per metric, against a hand-audited production system. |
+| Documentation | 8 of 9 | Not separately. Its checks match a heading, and the evidence string shows which heading matched. |
+
+The code axis is the least automated and the only one whose automation has
+never been compared against a person answering the same question on real
+source. Validating it needs a design system with both its source and an
+independent human audit of the same components, which this project does not
+yet have ([#4](https://github.com/usepolder/current/issues/4)).
+
+That matters more than it sounds, because code is the X axis: the quadrant's
+central claim is that a system can be designed consistently and built
+inconsistently, and the half carrying that claim is the half with no evidence
+behind its automation. The design-axis validation, by contrast, found a real
+bug — a check reading Figma bound-variable keys that Figma never emits, wrong
+on every component it looked at.
+
 **Checked automatically** — ARIA attributes present, text alternatives on non-text content, hardcoded colours and px values, component naming, code/Figma property parity, colour + type + spacing + radius token binding, layer naming, Auto Layout, prototype wiring, and whether each documented section exists.
 
 **Left to a human** — interaction-state coverage, keyboard and screenreader behaviour, colour contrast, responsiveness, localisation, whether layers are *necessary*, and whether the docs are any good. Figma's REST API exposes no accessibility annotations (its `AnnotationsTrait` is an empty placeholder in the published OpenAPI spec), so anything resting on that is manual by necessity, not by laziness.

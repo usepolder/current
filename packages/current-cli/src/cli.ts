@@ -264,10 +264,13 @@ function buildFigmaClient(
 /**
  * Name things on one summary line without turning it into a wall.
  *
- * The config holds the full list either way, so the line stays readable and
- * points there for the tail rather than printing forty names.
+ * Five, because the prefix this is appended to already costs about 50
+ * columns: ten names ran past 180 and wrapped two or three times in a normal
+ * terminal, which puts the "and N more" tail mid-wrap and makes the list
+ * unscannable just as it gets interesting. The config holds the full list
+ * either way, so the line points there for the tail.
  */
-function nameList(names: readonly string[], limit = 10): string {
+function nameList(names: readonly string[], limit = 5): string {
   if (names.length <= limit) return names.join(', ');
   return `${names.slice(0, limit).join(', ')} and ${names.length - limit} more`;
 }

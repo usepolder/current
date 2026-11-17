@@ -343,6 +343,31 @@ describe('run init', () => {
     }
   });
 
+  // A real library's gap can be dozens of components; the line names enough to
+  // recognise and leaves the rest to the config rather than wrapping the
+  // terminal three times.
+  it('stops naming after five and points at the config for the rest', async () => {
+    const dir = tempRepo({ 'src/Button/Button.tsx': '' });
+    const restore = stubFigmaFile([
+      { id: '1:2', name: 'Button' },
+      ...['Calendar', 'Carousel', 'DataGrid', 'Modal', 'Popover', 'Tooltip'].map((name, i) => ({
+        id: `4:${i}`,
+        name,
+      })),
+    ]);
+    try {
+      const r = await invoke(['init', dir, '--figma', 'FILEKEY'], { CURRENT_FIGMA_TOKEN: 'figd_x' });
+      expect(r.code).toBe(0);
+      expect(r.out).toContain(
+        '6 Figma components with no component source: Calendar, Carousel, DataGrid, Modal, Popover and 1 more',
+      );
+      // The one it stopped short of is still in the file.
+      expect(fs.readFileSync(path.join(dir, '.polder.yml'), 'utf8')).toContain('  #   Tooltip:');
+    } finally {
+      restore();
+    }
+  });
+
   it('says nothing about Figma-only components when every one matched', async () => {
     const dir = tempRepo({ 'src/Button/Button.tsx': '', 'src/Card/Card.tsx': '' });
     const restore = stubFigmaFile([

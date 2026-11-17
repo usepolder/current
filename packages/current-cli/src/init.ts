@@ -20,6 +20,32 @@ export interface PlannedComponent extends CodeComponent {
   note: string | null;
 }
 
+/** A Figma component that no component source file claimed. */
+export interface FigmaOnlyComponent {
+  name: string;
+  /** Figma node id, e.g. `4:5`. */
+  figma: string;
+  /** The Figma page it lives on, for anyone going to look at it. */
+  page: string;
+}
+
+/**
+ * Both halves of what `init` found: components it could pair with code, and
+ * Figma components it could not.
+ *
+ * The second list is the reason this is an object rather than an array.
+ * `planComponents` used to map over the code components alone, so a Figma
+ * component with no source file simply fell out of the result and was never
+ * mentioned again — a library with 40 Figma components and 25 React ones
+ * scaffolded 25 entries and reported no gap. That is exactly the "strong in
+ * Figma, weak in code" corner the quadrant exists to surface, so it has to be
+ * carried out of the planner rather than discarded inside it.
+ */
+export interface InitPlan {
+  components: PlannedComponent[];
+  figmaOnly: FigmaOnlyComponent[];
+}
+
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'lib', 'build', 'coverage', '.next', '.turbo', 'out',
 ]);
@@ -99,17 +125,22 @@ function findDocs(root: string, name: string): string | null {
 }
 
 /**
- * Pair code components with Figma nodes by name.
+ * Pair code components with Figma nodes by name, and report the leftovers.
  *
  * Only an exact name match is written as a live mapping. Anything softer is
  * written commented out, because README promises Current will not guess a
  * mapping: a wrong guess silently scores the wrong node forever, and nobody
  * re-reads a generated file they did not have to think about.
+ *
+ * Every Figma component touched by a match — including the runners-up of an
+ * ambiguous one, which are named in its note — counts as accounted for. The
+ * rest come back in `figmaOnly` so neither the config nor the summary can
+ * pretend they do not exist.
  */
 export function planComponents(
   code: readonly CodeComponent[],
   figma: readonly FigmaComponentSummary[],
-): PlannedComponent[] {
+): InitPlan {
   const exact = new Map<string, FigmaComponentSummary[]>();
   const loose = new Map<string, FigmaComponentSummary[]>();
   for (const f of figma) {
@@ -122,43 +153,100 @@ export function planComponents(
     loose.set(k, l);
   }
 
-  return code.map((c) => {
+  // Node ids, not names: two Figma components can share a name, and only one
+  // of them may have been reached by a match.
+  const claimed = new Set<string>();
+  const claim = (hits: readonly FigmaComponentSummary[]): void => {
+    for (const h of hits) claimed.add(h.id);
+  };
+
+  const components = code.map((c): PlannedComponent => {
     const hits = exact.get(c.name) ?? [];
     if (hits.length === 1) {
+      claim(hits);
       return { ...c, figma: hits[0].id, match: 'exact', note: null };
     }
     if (hits.length > 1) {
+      claim(hits);
       return {
         ...c,
         figma: hits[0].id,
         match: 'ambiguous',
-        note: `${hits.length} Figma components are named ${c.name}: ${hits.map((h) => `${h.id} on ${h.page || 'untitled page'}`).join(', ')}`,
+        note: `${hits.length} Figma components are named ${c.name}: ${hits.map((h) => `${h.id} on ${oneLine(h.page) || 'untitled page'}`).join(', ')}`,
       };
     }
     const near = loose.get(normalise(c.name)) ?? [];
     if (near.length === 1) {
-      return { ...c, figma: near[0].id, match: 'fuzzy', note: `Figma calls this "${near[0].name}"` };
+      claim(near);
+      return { ...c, figma: near[0].id, match: 'fuzzy', note: `Figma calls this "${oneLine(near[0].name)}"` };
     }
     if (near.length > 1) {
+      claim(near);
       return {
         ...c,
         figma: near[0].id,
         match: 'ambiguous',
-        note: `several Figma components resemble ${c.name}: ${near.map((h) => `"${h.name}" ${h.id}`).join(', ')}`,
+        note: `several Figma components resemble ${c.name}: ${near.map((h) => `"${oneLine(h.name)}" ${h.id}`).join(', ')}`,
       };
     }
     return { ...c, figma: null, match: 'none', note: null };
   });
+
+  const figmaOnly = figma
+    .filter((f) => !claimed.has(f.id))
+    .map((f) => ({ name: f.name, figma: f.id, page: f.page }))
+    // Sorted by name, then id, so a second run over an unchanged file is
+    // byte-identical even though the Figma API orders nodes by tree position.
+    .sort((a, b) => a.name.localeCompare(b.name) || a.figma.localeCompare(b.figma));
+
+  return { components, figmaOnly };
 }
 
 function quote(v: string): string {
   return `"${v.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
-/** Render the `current:` block. Uncertain mappings are commented, not omitted. */
+/**
+ * Flatten a Figma-supplied string to one line before it goes into a comment.
+ *
+ * Figma layer names are unconstrained, and a newline in one used to end the
+ * comment it was being written into: the next line landed at column 0 and
+ * `init` wrote a `.polder.yml` that would not parse — or, worse, one that
+ * parsed with a stray top-level key. Everything here comes from someone
+ * else's design file, so nothing from it is allowed to end a line.
+ */
+function oneLine(v: string): string {
+  return v.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * A commented-out mapping key that is still valid once uncommented.
+ *
+ * A bare key is left bare, because that is what the reader expects to see.
+ * Anything with a colon, a hash or a space in it is quoted, since those make
+ * a plain YAML key ambiguous or invalid the moment the `#` comes off.
+ */
+function commentKey(name: string): string {
+  const flat = oneLine(name);
+  return /^[A-Za-z0-9_-]+$/.test(flat) && flat !== '' ? flat : quote(flat);
+}
+
+/**
+ * Render the `current:` block. Uncertain mappings are commented, not omitted.
+ *
+ * Figma components with no source file are written in too, commented out,
+ * rather than only being counted on stdout. The summary line scrolls away the
+ * moment the terminal does; `.polder.yml` is the artifact a person actually
+ * reads before trusting a score, so that is where a gap has to be visible. An
+ * auditor who finds the component does exist in code fills in its `code:` path
+ * and uncomments the entry; one who confirms it is unbuilt leaves the comment
+ * as the record. No `code:` path is invented for them — a guessed path is the
+ * permanent lie this file exists to avoid, so the key is written empty.
+ */
 export function renderCurrentBlock(
   plan: readonly PlannedComponent[],
   fileKey: string | null,
+  figmaOnly: readonly FigmaOnlyComponent[] = [],
 ): string {
   const lines: string[] = [
     '# Written by `current init`. Review the commented lines before trusting the scores.',
@@ -175,11 +263,19 @@ export function renderCurrentBlock(
   }
 
   if (plan.length === 0) {
+    // `components: {}` only when there is nothing to uncomment beneath it: a
+    // block mapping cannot follow a flow one, so an orphan entry uncommented
+    // under `{}` would not parse, and the block below tells the reader to do
+    // exactly that. An empty `components:` is equivalent to the loader, which
+    // reads a null mapping as no components (core/src/config.ts parseComponents).
     lines.push(
-      '  components: {}',
+      figmaOnly.length === 0 ? '  components: {}' : '  components:',
       '  # No component source was found. `current init` looks for Button.tsx or',
       '  # Button/index.tsx, ignoring tests, stories and build output.',
     );
+    // A Figma file with components and a repo with none is the extreme of the
+    // same gap, so it still gets listed rather than falling through here.
+    lines.push(...renderFigmaOnly(figmaOnly));
     return lines.join('\n');
   }
 
@@ -196,7 +292,53 @@ export function renderCurrentBlock(
     }
     if (c.docs !== null) lines.push(`      docs: ${quote(c.docs)}`);
   }
+  lines.push(...renderFigmaOnly(figmaOnly));
   return lines.join('\n');
+}
+
+/**
+ * The commented-out tail listing Figma components that matched no code.
+ *
+ * The header states what the list leaves out as well as what it holds. A
+ * reader who counts 40 components in Figma and 16 here cannot otherwise
+ * account for the difference without reconstructing the matching rule: nodes
+ * named in an uncertain mapping above are excluded, because the fact worth
+ * having about them — that some component in this codebase may be them — only
+ * exists next to that component.
+ */
+function renderFigmaOnly(figmaOnly: readonly FigmaOnlyComponent[]): string[] {
+  if (figmaOnly.length === 0) return [];
+  const n = figmaOnly.length;
+  const lines = [
+    `  # ${n} Figma component${n === 1 ? '' : 's'} matched no component source. Current cannot`,
+    '  # score a component it cannot find in code, so these are listed here rather',
+    '  # than dropped: design being ahead of code is the gap worth seeing, not a',
+    '  # reason to leave it out of the file. Anything named in an unconfirmed',
+    '  # mapping above is not repeated here. If one of them does exist in code,',
+    '  # fill in its code: path and uncomment the entry; if it is genuinely',
+    '  # unbuilt, leave this comment as the record of that.',
+  ];
+  // Two unmatched components can share a name — Figma has no uniqueness rule
+  // — and the entries are keyed by that name, so uncommenting both would
+  // produce a duplicate YAML key. The reader cannot see the collision from
+  // two entries that differ only in a node id, so each one says so.
+  const sameName = new Map<string, FigmaOnlyComponent[]>();
+  for (const f of figmaOnly) {
+    const key = oneLine(f.name);
+    sameName.set(key, [...(sameName.get(key) ?? []), f]);
+  }
+
+  for (const f of figmaOnly) {
+    const twins = (sameName.get(oneLine(f.name)) ?? []).filter((o) => o.figma !== f.figma);
+    const collision =
+      twins.length === 0
+        ? ''
+        : `   # name shared with ${twins.map((o) => o.figma).join(', ')} — uncomment only one`;
+    lines.push(`  #   ${commentKey(f.name)}:${collision}`);
+    lines.push(`  #     figma: ${quote(f.figma)}   # on ${oneLine(f.page) || 'untitled page'}`);
+    lines.push('  #     code: ""   # no source file found — set this before uncommenting');
+  }
+  return lines;
 }
 
 /**

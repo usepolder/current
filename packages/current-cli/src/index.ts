@@ -19,6 +19,8 @@ export {
   planComponents,
   renderCurrentBlock,
   type CodeComponent,
+  type FigmaOnlyComponent,
+  type InitPlan,
   type MatchKind,
   type PlannedComponent,
 } from './init';

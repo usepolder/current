@@ -1,0 +1,35 @@
+# Flags work that is tagged but never published.
+#
+# Drift spent four and a half months unable to publish after its npm token
+# expired. Nothing failed and nothing warned: releases simply stopped arriving,
+# and two merged PRs sat unshipped until someone asked why. That failure mode
+# is silent by construction, so it needs something that goes looking.
+#
+# Runs across all three Polder repositories, not just this one. Needs no
+# secrets: public repositories and the npm registry are both readable
+# unauthenticated.
+name: Release audit
+
+on:
+  schedule:
+    # Mondays, 09:00 UTC — a week is short enough to catch a missed release
+    # while it is still fresh, and quiet enough that the result gets read.
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # No install: the script uses only the standard library and fetch.
+      - run: node scripts/check-published.mjs
+        env:
+          # Raises the API rate limit; the script works without it.
+          GITHUB_TOKEN: ${{ github.token }}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assess, assessUnreleased } from './check-published.mjs';
+import { assess, assessUnreleased, okLine } from './check-published.mjs';
 
 const DAY = 86400000;
 const NOW = Date.parse('2026-11-17T12:00:00Z');
@@ -154,5 +154,26 @@ describe('assessUnreleased', () => {
     });
     expect(r.level).toBe('fail');
     expect(r.text).toContain('unknown');
+  });
+});
+
+describe('okLine', () => {
+  const passing = { level: 'ok', text: '@usepolder/current: 0.2.0 (tag v0.2.0)' };
+
+  // The reason this function exists: without the branch version on the line,
+  // a passing merged-but-untagged check and a check that stopped running look
+  // exactly the same in the log.
+  it('reports the default branch on a passing line', () => {
+    const r = okLine(passing, { raw: '0.2.0', version: [0, 2, 0], bumpedAt: NOW });
+    expect(r.text).toContain('default branch 0.2.0');
+  });
+
+  it('says so loudly when the manifest could not be read', () => {
+    expect(okLine(passing, null).text).toContain('NOT CHECKED');
+  });
+
+  it('leaves a failure alone, because assess already worded it', () => {
+    const failed = { level: 'fail', text: 'something is wrong' };
+    expect(okLine(failed, null)).toBe(failed);
   });
 });

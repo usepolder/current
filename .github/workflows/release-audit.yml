@@ -1,9 +1,13 @@
-# Flags work that is tagged but never published.
+# Flags work that never reached npm: tagged but never published, or merged to
+# the default branch but never tagged.
 #
 # Drift spent four and a half months unable to publish after its npm token
 # expired. Nothing failed and nothing warned: releases simply stopped arriving,
 # and two merged PRs sat unshipped until someone asked why. That failure mode
 # is silent by construction, so it needs something that goes looking.
+#
+# Both checks report on every run, passing or failing. A check that only
+# speaks up when it fails cannot be told apart from one that stopped running.
 #
 # Runs across all three Polder repositories, not just this one. Needs no
 # secrets: public repositories and the npm registry are both readable

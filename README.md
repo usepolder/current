@@ -414,6 +414,8 @@ The Action writes `.current/badge.json` and `.current/badge.svg` on pushes to th
 - **No hosted dashboard.** The report is a file. Put it wherever you put files.
 - **No opinion about your rubric.** Every metric can be disabled, made manual, reworded or re-tuned, and you can [add your own](#your-own-norms). The scoring arithmetic is fixed, and every norm counts equally: a score you can quietly tune is a score nobody should trust. To make something matter more, add more norms about it.
 
+[TODOS.md](TODOS.md) records what else was considered and set aside, and what would have to change for each one to be worth doing.
+
 ## Repo layout
 
 npm workspaces:

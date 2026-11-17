@@ -38,10 +38,12 @@ jobs:
             exit 1
           fi
 
+      # No NODE_AUTH_TOKEN: npm authenticates via OIDC (trusted publishing),
+      # configured per package on npmjs.com against this repo and this
+      # workflow filename. Provenance is automatic under OIDC, so --provenance
+      # is no longer passed.
       - name: Publish to npm
-        run: npm publish -w @usepolder/current-core -w @usepolder/current --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish -w @usepolder/current-core -w @usepolder/current
 
       - name: Create the GitHub release
         run: gh release create "$GITHUB_REF_NAME" --generate-notes

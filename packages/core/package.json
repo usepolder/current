@@ -1,6 +1,6 @@
 {
   "name": "@usepolder/current-core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Scoring engine for Current: component health across code, Figma, and docs.",
   "license": "Apache-2.0",
   "author": "Polder HQ",

@@ -226,6 +226,8 @@ npm i -D playwright && npx playwright install chromium
 
 In the GitHub Action you install nothing: when a `docs:` entry is a URL, the Action fetches `playwright-core` (pinned, about 2 MB, no install scripts) into the runner's temp directory and drives the Chrome that GitHub-hosted runners already ship, downloading Chromium only if there is none. If that setup fails, for instance with no network, the docs metrics report N/A with the reason in the evidence and the run adds a warning; the job does not fail. A repo with only local docs never triggers any of this.
 
+Pages are rendered four at a time in one browser, so run time no longer grows linearly with the number of documented components, and two components pointing at the same page cost one render. A page that fails still fails on its own: the rest of the pages are rendered, and only the components mapped to that page go N/A.
+
 For the CLI it is an **optional** dependency. If you document in the repo, or you do not score documentation at all, you never install it and `npx @usepolder/current` stays small. Without it, URL-mapped docs report as N/A with that hint — never as "undocumented", because "we could not look" and "we looked and found nothing" are different answers.
 
 ### 4. Answer the manual metrics

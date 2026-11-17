@@ -35164,9 +35164,10 @@ function checkDocSection(facts) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.RendererUnavailableError = exports.RENDERER_INSTALL_HINT = void 0;
+exports.RendererUnavailableError = exports.DEFAULT_DOCS_CONCURRENCY = exports.RENDERER_INSTALL_HINT = void 0;
 exports.isDocsUrl = isDocsUrl;
 exports.createPlaywrightRenderer = createPlaywrightRenderer;
+exports.renderDocsPages = renderDocsPages;
 exports.closeRenderer = closeRenderer;
 const errors_1 = __nccwpck_require__(76);
 const logger_1 = __nccwpck_require__(9539);
@@ -35289,6 +35290,55 @@ async function waitForStableHeadings(page, budgetMs) {
         }
         await new Promise((r) => setTimeout(r, 300));
     }
+}
+/**
+ * How many pages to render at once.
+ *
+ * Four, not more: the pages share one browser process, and the hosted runner
+ * this most often runs on has two cores. Past the point where the bottleneck
+ * stops being the network and starts being paint, more concurrency buys
+ * nothing and makes each page's settle poll noisier.
+ */
+exports.DEFAULT_DOCS_CONCURRENCY = 4;
+/**
+ * Render every URL-mapped docs page, a few at a time.
+ *
+ * Rendering used to happen inside the per-component loop, one page at a time,
+ * which made the slowest path in the tool scale linearly with the number of
+ * documented components — the number you want to be high. A 31-component
+ * system with 24 pages took over two minutes, nearly all of it waiting.
+ *
+ * Two things fall out of hoisting it here. Duplicate URLs are rendered once,
+ * which a per-component loop could not do. And a failure stays attached to
+ * its URL rather than to whichever component happened to ask first, so each
+ * component still reports its own reason.
+ */
+async function renderDocsPages(urls, renderer, opts = {}) {
+    const logger = opts.logger ?? logger_1.silentLogger;
+    const unique = [...new Set(urls)];
+    const out = new Map();
+    if (unique.length === 0)
+        return out;
+    const limit = Math.max(1, opts.concurrency ?? exports.DEFAULT_DOCS_CONCURRENCY);
+    logger.trace(`docs: rendering ${unique.length} page(s), ${Math.min(limit, unique.length)} at a time`);
+    let next = 0;
+    const worker = async () => {
+        while (next < unique.length) {
+            const url = unique[next++];
+            try {
+                out.set(url, { html: await renderer(url) });
+            }
+            catch (err) {
+                // One page failing must not abandon the others, which is why this is
+                // a pool of workers and not Promise.all — a rejection there would
+                // leave the remaining pages unrendered and the components that map to
+                // them indistinguishable from components nobody documented.
+                out.set(url, { error: err.message });
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(limit, unique.length) }, worker));
+    return out;
 }
 class RendererUnavailableError extends errors_1.CurrentError {
     constructor() {
@@ -35867,8 +35917,8 @@ function lastEntry(entries) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.FigmaClient = exports.RENDERER_INSTALL_HINT = exports.RendererUnavailableError = exports.closeRenderer = exports.createPlaywrightRenderer = exports.isDocsUrl = exports.headingMatches = exports.extractHtmlHeadings = exports.extractHeadings = exports.checkDocSection = exports.flatten = exports.figmaPropertyNames = exports.MIN_BOUND_KEY = exports.DESIGN_CHECKS = exports.DEFAULT_MIN_BOUND = exports.normalisePropName = exports.collectCodePropNames = exports.CODE_CHECKS = exports.QUADRANT_LABELS = exports.round1 = exports.usagePriority = exports.weakestAxis = exports.averageConfidentScore = exports.averageScore = exports.quadrantFor = exports.scoreAnswers = exports.silentLogger = exports.createLogger = exports.collectRelatedFiles = exports.BABEL_OPTIONS = exports.parseSource = exports.lookupAnswer = exports.coerceAnswer = exports.parseAnswers = exports.DEFAULT_MIN_CONFIDENCE = exports.DEFAULT_THRESHOLD = exports.CURRENT_SCHEMA_VERSION = exports.resolveRepoPath = exports.resolveComponentPaths = exports.parseConfig = exports.metricKeys = exports.CATEGORIES = exports.DEFAULT_METRICS_BY_ID = exports.DEFAULT_METRICS = exports.FigmaError = exports.NoComponentsError = exports.PathTraversalError = exports.ConfigValidationError = exports.ParseError = exports.CurrentError = void 0;
-exports.HISTORY_FILE = exports.HISTORY_DIR = exports.metricsHash = exports.lastEntry = exports.historyPath = exports.entryFromReport = exports.readHistory = exports.appendHistory = exports.scanRepo = exports.MIN_REACH_SCHEMA = exports.resolveUsageFile = exports.loadUsage = exports.parseReachUsage = exports.metricsForCategory = exports.fixFirst = exports.axesNotFullyCovered = exports.countQuadrants = exports.SCHEMA_VERSION = exports.TOKEN_ENV_VAR = exports.FIGMA_API = exports.collectComponents = void 0;
+exports.RendererUnavailableError = exports.DEFAULT_DOCS_CONCURRENCY = exports.renderDocsPages = exports.closeRenderer = exports.createPlaywrightRenderer = exports.isDocsUrl = exports.headingMatches = exports.extractHtmlHeadings = exports.extractHeadings = exports.checkDocSection = exports.flatten = exports.figmaPropertyNames = exports.MIN_BOUND_KEY = exports.DESIGN_CHECKS = exports.DEFAULT_MIN_BOUND = exports.normalisePropName = exports.collectCodePropNames = exports.CODE_CHECKS = exports.QUADRANT_LABELS = exports.round1 = exports.usagePriority = exports.weakestAxis = exports.averageConfidentScore = exports.averageScore = exports.quadrantFor = exports.scoreAnswers = exports.silentLogger = exports.createLogger = exports.collectRelatedFiles = exports.BABEL_OPTIONS = exports.parseSource = exports.lookupAnswer = exports.coerceAnswer = exports.parseAnswers = exports.DEFAULT_MIN_CONFIDENCE = exports.DEFAULT_THRESHOLD = exports.CURRENT_SCHEMA_VERSION = exports.resolveRepoPath = exports.resolveComponentPaths = exports.parseConfig = exports.metricKeys = exports.CATEGORIES = exports.DEFAULT_METRICS_BY_ID = exports.DEFAULT_METRICS = exports.FigmaError = exports.NoComponentsError = exports.PathTraversalError = exports.ConfigValidationError = exports.ParseError = exports.CurrentError = void 0;
+exports.HISTORY_FILE = exports.HISTORY_DIR = exports.metricsHash = exports.lastEntry = exports.historyPath = exports.entryFromReport = exports.readHistory = exports.appendHistory = exports.scanRepo = exports.MIN_REACH_SCHEMA = exports.resolveUsageFile = exports.loadUsage = exports.parseReachUsage = exports.metricsForCategory = exports.fixFirst = exports.axesNotFullyCovered = exports.countQuadrants = exports.SCHEMA_VERSION = exports.TOKEN_ENV_VAR = exports.FIGMA_API = exports.collectComponents = exports.FigmaClient = exports.RENDERER_INSTALL_HINT = void 0;
 var errors_1 = __nccwpck_require__(76);
 Object.defineProperty(exports, "CurrentError", ({ enumerable: true, get: function () { return errors_1.CurrentError; } }));
 Object.defineProperty(exports, "ParseError", ({ enumerable: true, get: function () { return errors_1.ParseError; } }));
@@ -35928,6 +35978,8 @@ var docs_source_1 = __nccwpck_require__(560);
 Object.defineProperty(exports, "isDocsUrl", ({ enumerable: true, get: function () { return docs_source_1.isDocsUrl; } }));
 Object.defineProperty(exports, "createPlaywrightRenderer", ({ enumerable: true, get: function () { return docs_source_1.createPlaywrightRenderer; } }));
 Object.defineProperty(exports, "closeRenderer", ({ enumerable: true, get: function () { return docs_source_1.closeRenderer; } }));
+Object.defineProperty(exports, "renderDocsPages", ({ enumerable: true, get: function () { return docs_source_1.renderDocsPages; } }));
+Object.defineProperty(exports, "DEFAULT_DOCS_CONCURRENCY", ({ enumerable: true, get: function () { return docs_source_1.DEFAULT_DOCS_CONCURRENCY; } }));
 Object.defineProperty(exports, "RendererUnavailableError", ({ enumerable: true, get: function () { return docs_source_1.RendererUnavailableError; } }));
 Object.defineProperty(exports, "RENDERER_INSTALL_HINT", ({ enumerable: true, get: function () { return docs_source_1.RENDERER_INSTALL_HINT; } }));
 var figma_client_1 = __nccwpck_require__(6835);
@@ -36679,6 +36731,18 @@ async function scanRepo(opts) {
     else if (figmaIds.length > 0) {
         figmaUnavailable = `No Figma token provided; design metrics were not evaluated.`;
     }
+    // Rendered up front, a few at a time, rather than one page per iteration of
+    // the loop below: see renderDocsPages. The loop itself now awaits nothing.
+    let docsPages = new Map();
+    if (opts.renderDocs !== undefined && opts.renderDocs !== null) {
+        const urls = [...resolvedPaths.values()]
+            .map((p) => p.docs)
+            .filter((d) => d !== null && (0, docs_source_1.isDocsUrl)(d));
+        docsPages = await (0, docs_source_1.renderDocsPages)(urls, opts.renderDocs, {
+            ...(opts.docsConcurrency === undefined ? {} : { concurrency: opts.docsConcurrency }),
+            logger,
+        });
+    }
     const loaded = [];
     for (const mapping of config.components) {
         const paths = resolvedPaths.get(mapping.name);
@@ -36702,7 +36766,7 @@ async function scanRepo(opts) {
         else if (paths.code !== null) {
             logger.trace(`${mapping.name}: code file missing at ${mapping.code}`);
         }
-        const docs = await loadDocs(mapping.name, paths.docs, opts, logger);
+        const docs = loadDocs(mapping.name, paths.docs, opts, docsPages, logger);
         loaded.push({
             name: mapping.name,
             codePath: mapping.code,
@@ -36798,7 +36862,7 @@ function applyUsage(components, usage) {
  * them would mark a well-documented system as undocumented the moment a
  * renderer is missing or a site is down.
  */
-async function loadDocs(component, docs, opts, logger) {
+function loadDocs(component, docs, opts, pages, logger) {
     if (docs === null)
         return { headings: null, absence: 'unmapped' };
     if (!(0, docs_source_1.isDocsUrl)(docs)) {
@@ -36814,28 +36878,33 @@ async function loadDocs(component, docs, opts, logger) {
         logger.trace(`${component}: docs are a URL but no renderer was provided`);
         return { headings: null, absence: 'no-renderer' };
     }
-    try {
-        const html = await opts.renderDocs(docs);
-        const headings = (0, docs_checks_1.extractHtmlHeadings)(html);
-        if (headings.length === 0) {
-            // A hosted docs page with no headings at all is far more likely to be
-            // an incomplete render than a real page documenting nothing. Treat it
-            // as unread rather than scoring the component as undocumented.
-            logger.trace(`${component}: ${docs} returned no headings — treating as unread`);
-            return {
-                headings: null,
-                absence: 'unreadable',
-                detail: 'page returned no headings; it may not have finished rendering',
-            };
-        }
-        logger.trace(`${component}: ${headings.length} heading(s) from ${docs}`);
-        return { headings, absence: null };
+    const page = pages.get(docs);
+    if (page === undefined) {
+        // Only reachable if the prefetch and this lookup disagree about which
+        // URLs exist. Report it as unread rather than as zero headings: a bug of
+        // ours must not read as a verdict about the user's documentation.
+        logger.trace(`${component}: ${docs} was never rendered`);
+        return { headings: null, absence: 'unreadable', detail: 'page was not rendered' };
     }
-    catch (err) {
-        const detail = err.message.split('\n')[0];
+    if ('error' in page) {
+        const detail = page.error.split('\n')[0];
         logger.trace(`${component}: docs page failed — ${detail}`);
         return { headings: null, absence: 'unreadable', detail };
     }
+    const headings = (0, docs_checks_1.extractHtmlHeadings)(page.html);
+    if (headings.length === 0) {
+        // A hosted docs page with no headings at all is far more likely to be
+        // an incomplete render than a real page documenting nothing. Treat it
+        // as unread rather than scoring the component as undocumented.
+        logger.trace(`${component}: ${docs} returned no headings — treating as unread`);
+        return {
+            headings: null,
+            absence: 'unreadable',
+            detail: 'page returned no headings; it may not have finished rendering',
+        };
+    }
+    logger.trace(`${component}: ${headings.length} heading(s) from ${docs}`);
+    return { headings, absence: null };
 }
 function scoreComponent(c, config, answers, logger, ctx) {
     const results = [];

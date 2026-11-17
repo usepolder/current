@@ -3,11 +3,13 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  DEFAULT_DOCS_CONCURRENCY,
   RendererUnavailableError,
   closeRenderer,
   createPlaywrightRenderer,
   parseAnswers,
   parseConfig,
+  renderDocsPages,
   scanRepo,
   type PageRenderer,
 } from '@usepolder/current-core';
@@ -192,8 +194,251 @@ describe('createPlaywrightRenderer', () => {
     await expect(render('https://example.test')).rejects.toThrow(/playwright/);
   });
 
+  // Load-bearing for the Action, which installs playwright-core into
+  // RUNNER_TEMP the first time a page is rendered. Concurrent workers all call
+  // the renderer at once; if each one launched its own browser, that would be
+  // four npm installs racing over one directory.
+  it('launches one browser however many pages render at once', async () => {
+    let loads = 0;
+    let launches = 0;
+    const page = {
+      goto: async () => undefined,
+      waitForSelector: async () => undefined,
+      evaluate: async () => 3,
+      content: async () => '<h2>Usage</h2>',
+      close: async () => undefined,
+    };
+    const render = createPlaywrightRenderer({
+      load: async () => {
+        loads += 1;
+        return {
+          chromium: {
+            launch: async () => {
+              launches += 1;
+              return { newPage: async () => page, close: async () => undefined };
+            },
+          },
+        };
+      },
+    });
+
+    const urls = Array.from({ length: 12 }, (_, i) => `https://example.test/${i}`);
+    const out = await renderDocsPages(urls, render, { concurrency: 4 });
+
+    expect(loads).toBe(1);
+    expect(launches).toBe(1);
+    expect(out.size).toBe(12);
+    await closeRenderer(render);
+  });
+
   it('closes cleanly even when it never launched a browser', async () => {
     await expect(closeRenderer(createPlaywrightRenderer())).resolves.toBeUndefined();
     await expect(closeRenderer(null)).resolves.toBeUndefined();
+  });
+});
+
+describe('renderDocsPages', () => {
+  /** A renderer that records how many calls were in flight at their peak. */
+  function tracking(body: (url: string) => Promise<string> = async (u) => `<h2>${u}</h2>`) {
+    const state = { inFlight: 0, peak: 0, calls: [] as string[] };
+    const render: PageRenderer = async (url) => {
+      state.calls.push(url);
+      state.inFlight += 1;
+      state.peak = Math.max(state.peak, state.inFlight);
+      try {
+        return await body(url);
+      } finally {
+        state.inFlight -= 1;
+      }
+    };
+    return { render, state };
+  }
+
+  const urls = (n: number) =>
+    Array.from({ length: n }, (_, i) => `https://example.test/docs/${i}`);
+
+  it('renders more than one page at a time', async () => {
+    const { render, state } = tracking(
+      async (u) => new Promise((r) => setTimeout(() => r(`<h2>${u}</h2>`), 5)),
+    );
+    await renderDocsPages(urls(8), render, { concurrency: 4 });
+    expect(state.peak).toBeGreaterThan(1);
+  });
+
+  it('never exceeds the cap', async () => {
+    const { render, state } = tracking(
+      async (u) => new Promise((r) => setTimeout(() => r(`<h2>${u}</h2>`), 5)),
+    );
+    await renderDocsPages(urls(12), render, { concurrency: 3 });
+    expect(state.peak).toBeLessThanOrEqual(3);
+  });
+
+  it('renders every page exactly once', async () => {
+    const { render, state } = tracking();
+    const out = await renderDocsPages(urls(7), render, { concurrency: 2 });
+    expect(state.calls).toHaveLength(7);
+    expect(out.size).toBe(7);
+  });
+
+  // A loop inside the component walk could not do this: two components
+  // pointing at one page used to cost two renders.
+  it('renders a duplicated URL once and gives both askers the result', async () => {
+    const { render, state } = tracking();
+    const one = 'https://example.test/docs/shared';
+    const out = await renderDocsPages([one, one, one], render);
+    expect(state.calls).toEqual([one]);
+    expect(out.size).toBe(1);
+    expect(out.get(one)).toEqual({ html: `<h2>${one}</h2>` });
+  });
+
+  // The invariant that matters most. Promise.all would abandon the remaining
+  // pages on the first rejection, leaving components that are documented
+  // indistinguishable from components that are not.
+  it('keeps rendering after a page fails, and attaches the failure to that URL', async () => {
+    const { render, state } = tracking(async (u) => {
+      if (u.endsWith('/3')) throw new Error('net::ERR_NAME_NOT_RESOLVED');
+      return `<h2>${u}</h2>`;
+    });
+    const list = urls(6);
+    const out = await renderDocsPages(list, render, { concurrency: 2 });
+
+    expect(state.calls).toHaveLength(6);
+    expect(out.get(list[3])).toEqual({ error: 'net::ERR_NAME_NOT_RESOLVED' });
+    for (const u of list.filter((_, i) => i !== 3)) {
+      expect(out.get(u)).toEqual({ html: `<h2>${u}</h2>` });
+    }
+  });
+
+  it('survives every page failing', async () => {
+    const { render } = tracking(async () => {
+      throw new Error('down');
+    });
+    const out = await renderDocsPages(urls(4), render, { concurrency: 2 });
+    expect([...out.values()].every((v) => 'error' in v)).toBe(true);
+  });
+
+  it('does not touch the renderer when there is nothing to render', async () => {
+    const { render, state } = tracking();
+    const out = await renderDocsPages([], render);
+    expect(state.calls).toEqual([]);
+    expect(out.size).toBe(0);
+  });
+
+  it('clamps a nonsense cap to one rather than stalling', async () => {
+    const { render, state } = tracking();
+    await renderDocsPages(urls(3), render, { concurrency: 0 });
+    expect(state.calls).toHaveLength(3);
+    expect(state.peak).toBe(1);
+  });
+
+  it('caps the worker count at the number of pages', async () => {
+    const { render, state } = tracking(
+      async (u) => new Promise((r) => setTimeout(() => r(`<h2>${u}</h2>`), 5)),
+    );
+    await renderDocsPages(urls(2), render, { concurrency: 16 });
+    expect(state.peak).toBeLessThanOrEqual(2);
+  });
+
+  it('defaults to a small cap, not unbounded', async () => {
+    expect(DEFAULT_DOCS_CONCURRENCY).toBeLessThanOrEqual(6);
+    const { render, state } = tracking(
+      async (u) => new Promise((r) => setTimeout(() => r(`<h2>${u}</h2>`), 5)),
+    );
+    await renderDocsPages(urls(20), render);
+    expect(state.peak).toBeLessThanOrEqual(DEFAULT_DOCS_CONCURRENCY);
+  });
+});
+
+describe('hosted documentation, rendered concurrently', () => {
+  const TWO = `
+components:
+  Button:
+    docs: "https://example.test/docs/button"
+  Card:
+    docs: "https://example.test/docs/card"
+`;
+
+  it('renders a whole scan\u2019s pages concurrently', async () => {
+    const dir = repoWith(TWO);
+    let inFlight = 0;
+    let peak = 0;
+    await scanRepo({
+      repoRoot: dir,
+      config: parseConfig(polder(TWO)),
+      answers: new Map(),
+      renderDocs: async (url) => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((r) => setTimeout(r, 5));
+        inFlight -= 1;
+        return `<h2>Usage</h2><h2>${url}</h2>`;
+      },
+    });
+    expect(peak).toBe(2);
+  });
+
+  // "Could not look" and "looked and found nothing" have to stay apart even
+  // when the failure happens next to a success.
+  it('fails one page without costing the other its score', async () => {
+    const dir = repoWith(TWO);
+    const report = await scanRepo({
+      repoRoot: dir,
+      config: parseConfig(polder(TWO)),
+      answers: new Map(),
+      renderDocs: async (url) => {
+        if (url.endsWith('/card')) throw new Error('403 Forbidden');
+        return '<h1>Button</h1><h2>Usage</h2><h2>Anatomy</h2>';
+      },
+    });
+
+    const [button, card] = report.components;
+    expect(button.name).toBe('Button');
+    expect(card.name).toBe('Card');
+
+    expect(button.presence.docs).toBe('present');
+    expect(docMetrics(button).some((m) => m.answer === 'Yes')).toBe(true);
+
+    expect(docMetrics(card).every((m) => m.answer === 'N/A')).toBe(true);
+    expect(docMetrics(card)[0].evidence).toContain('403 Forbidden');
+    expect(card.scores.documentation.score).toBeNull();
+  });
+
+  it('reports components in config order regardless of which page finished first', async () => {
+    const dir = repoWith(TWO);
+    const report = await scanRepo({
+      repoRoot: dir,
+      config: parseConfig(polder(TWO)),
+      answers: new Map(),
+      // Card resolves first; the report must still read Button, Card.
+      renderDocs: async (url) => {
+        const delay = url.endsWith('/button') ? 20 : 1;
+        await new Promise((r) => setTimeout(r, delay));
+        return '<h2>Usage</h2>';
+      },
+    });
+    expect(report.components.map((c) => c.name)).toEqual(['Button', 'Card']);
+  });
+
+  it('renders one page once when two components share a URL', async () => {
+    const shared = `
+components:
+  Button:
+    docs: "https://example.test/docs/all"
+  Card:
+    docs: "https://example.test/docs/all"
+`;
+    const dir = repoWith(shared);
+    const seen: string[] = [];
+    const report = await scanRepo({
+      repoRoot: dir,
+      config: parseConfig(polder(shared)),
+      answers: new Map(),
+      renderDocs: async (url) => {
+        seen.push(url);
+        return '<h2>Usage</h2><h2>Anatomy</h2>';
+      },
+    });
+    expect(seen).toHaveLength(1);
+    expect(report.components.every((c) => c.presence.docs === 'present')).toBe(true);
   });
 });

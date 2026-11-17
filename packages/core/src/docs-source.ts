@@ -140,6 +140,73 @@ async function waitForStableHeadings(page: PlaywrightPage, budgetMs: number): Pr
   }
 }
 
+/**
+ * The outcome of rendering one page: either HTML, or why we could not look.
+ *
+ * Never "empty HTML". A page we failed to reach and a page that genuinely
+ * documents nothing have to stay distinguishable all the way through, because
+ * the second scores a component No and the first must score it N/A.
+ */
+export type RenderedPage = { html: string } | { error: string };
+
+/**
+ * How many pages to render at once.
+ *
+ * Four, not more: the pages share one browser process, and the hosted runner
+ * this most often runs on has two cores. Past the point where the bottleneck
+ * stops being the network and starts being paint, more concurrency buys
+ * nothing and makes each page's settle poll noisier.
+ */
+export const DEFAULT_DOCS_CONCURRENCY = 4;
+
+/**
+ * Render every URL-mapped docs page, a few at a time.
+ *
+ * Rendering used to happen inside the per-component loop, one page at a time,
+ * which made the slowest path in the tool scale linearly with the number of
+ * documented components — the number you want to be high. A 31-component
+ * system with 24 pages took over two minutes, nearly all of it waiting.
+ *
+ * Two things fall out of hoisting it here. Duplicate URLs are rendered once,
+ * which a per-component loop could not do. And a failure stays attached to
+ * its URL rather than to whichever component happened to ask first, so each
+ * component still reports its own reason.
+ */
+export async function renderDocsPages(
+  urls: readonly string[],
+  renderer: PageRenderer,
+  opts: { concurrency?: number; logger?: Logger } = {},
+): Promise<Map<string, RenderedPage>> {
+  const logger = opts.logger ?? silentLogger;
+  const unique = [...new Set(urls)];
+  const out = new Map<string, RenderedPage>();
+  if (unique.length === 0) return out;
+
+  const limit = Math.max(1, opts.concurrency ?? DEFAULT_DOCS_CONCURRENCY);
+  logger.trace(
+    `docs: rendering ${unique.length} page(s), ${Math.min(limit, unique.length)} at a time`,
+  );
+
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < unique.length) {
+      const url = unique[next++];
+      try {
+        out.set(url, { html: await renderer(url) });
+      } catch (err) {
+        // One page failing must not abandon the others, which is why this is
+        // a pool of workers and not Promise.all — a rejection there would
+        // leave the remaining pages unrendered and the components that map to
+        // them indistinguishable from components nobody documented.
+        out.set(url, { error: (err as Error).message });
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(limit, unique.length) }, worker));
+  return out;
+}
+
 export class RendererUnavailableError extends CurrentError {
   constructor() {
     super(RENDERER_INSTALL_HINT);

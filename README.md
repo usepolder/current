@@ -94,6 +94,30 @@ Every automated answer records *why*, visible in the report and in `--verbose`.
 
 ## Setup
 
+### 0. Or let it write the mapping for you
+
+```sh
+export CURRENT_FIGMA_TOKEN=figd_your_token
+npx @usepolder/current init --figma aBcDeFgHiJkLmNoP
+```
+
+`init` scans for component source, walks the Figma file, and writes the
+`current:` block with the two matched up. It is the fastest way to a first
+score, and it is careful about three things:
+
+- **It never overwrites.** No `.polder.yml` means it writes one; an existing
+  file without a `current:` block gains one and nothing else is touched; a file
+  that already has one is refused, so running it twice cannot clobber your
+  mapping. That matters because the file is shared with Drift and Reach.
+- **It only maps exact name matches.** Anything softer — `ButtonGroup` against
+  Figma's `Button Group`, or two Figma components with the same name — is
+  written **commented out** with the reason, for you to confirm. A guess that
+  looks like a decision is worse than a gap.
+- **It writes once, at the end.** A Figma walk that fails leaves nothing behind.
+
+Everything below is the same file written by hand. Read it either way: `init`
+gives you a starting point, not a finished config.
+
 ### 1. Map your components
 
 Current reads `.polder.yml` — the same file [Drift](https://github.com/usepolder/drift) and [Reach](https://github.com/usepolder/reach) read — under a `current:` key:
@@ -269,9 +293,11 @@ Things worth knowing:
 
 ```
 npx @usepolder/current [dir] [options]
+npx @usepolder/current init [dir] [--figma <file-key>]
 npx @usepolder/current figma list [dir]
 
 --json             Full report as JSON
+--figma <key>      init only: match component names against this Figma file
 --out <file>       Where to write the HTML report (default current-report.html)
 --usage <file>     Reach JSON report, to rank what to fix first by use
 --no-report        Skip the HTML report

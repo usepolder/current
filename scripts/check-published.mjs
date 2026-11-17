@@ -130,6 +130,21 @@ export function assess({ repo, pkg, tag, npm, now = Date.now(), graceMs = GRACE_
   };
 }
 
+/**
+ * Both checks pass silently if the only thing printed is the tag comparison.
+ * A check you cannot see pass is one you cannot tell is still running — which
+ * is the whole failure this script exists to catch — so the ok line reports
+ * the default branch too, and says so plainly when it could not be read.
+ */
+export function okLine(tagged, manifest) {
+  if (tagged.level !== 'ok') return tagged;
+  const branch =
+    manifest === null
+      ? 'default branch NOT CHECKED (no readable manifest)'
+      : `default branch ${manifest.raw}`;
+  return { ...tagged, text: `${tagged.text}, ${branch}` };
+}
+
 /** The version in a manifest on the default branch, and when it last changed. */
 export async function manifestVersion(repo, manifestPath, fetchJson = getJson) {
   let doc;
@@ -208,9 +223,10 @@ async function main() {
     const tag = await latestTag(repo);
     for (const { name, manifest: manifestPath } of packages) {
       const npm = await npmLatest(name);
-      results.push(assess({ repo, pkg: name, tag, npm }));
-
       const manifest = await manifestVersion(repo, manifestPath);
+
+      results.push(okLine(assess({ repo, pkg: name, tag, npm }), manifest));
+
       const unreleased = assessUnreleased({ pkg: name, manifest, npm, tag });
       if (unreleased.level !== 'ok') results.push(unreleased);
     }
@@ -226,7 +242,7 @@ async function main() {
     console.log(`\n${failures.length} package(s) have work that never reached npm.`);
     process.exit(1);
   }
-  console.log('\nEvery repository’s newest tag is published.');
+  console.log('\nEvery newest tag is published, and no default branch is ahead of npm.');
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

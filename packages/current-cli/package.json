@@ -1,6 +1,6 @@
 {
   "name": "@usepolder/current",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Component health report for design systems: one quadrant, code vs design, runs anywhere, holds nothing.",
   "license": "Apache-2.0",
   "author": "Polder HQ",
@@ -40,6 +40,6 @@
     "access": "public"
   },
   "dependencies": {
-    "@usepolder/current-core": "^0.3.0"
+    "@usepolder/current-core": "^0.3.1"
   }
 }

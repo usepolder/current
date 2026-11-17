@@ -147,7 +147,7 @@ npx @usepolder/current init --figma aBcDeFgHiJkLmNoP
 
 `init` scans for component source, walks the Figma file, and writes the
 `current:` block with the two matched up. It is the fastest way to a first
-score, and it is careful about three things:
+score, and it is careful about four things:
 
 - **It never overwrites.** No `.polder.yml` means it writes one; an existing
   file without a `current:` block gains one and nothing else is touched; a file
@@ -157,6 +157,11 @@ score, and it is careful about three things:
   Figma's `Button Group`, or two Figma components with the same name — is
   written **commented out** with the reason, for you to confirm. A guess that
   looks like a decision is worse than a gap.
+- **It accounts for both sides.** A Figma component that matched no source
+  file is written in too, commented out and with no invented `code:` path, and
+  counted and named in the summary. Design finished ahead of code is the
+  critical corner of the quadrant; it would be a strange tool that scaffolded
+  your config by quietly leaving it out.
 - **It writes once, at the end.** A Figma walk that fails leaves nothing behind.
 
 Everything below is the same file written by hand. Read it either way: `init`

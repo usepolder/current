@@ -262,6 +262,17 @@ function buildFigmaClient(
 }
 
 /**
+ * Name things on one summary line without turning it into a wall.
+ *
+ * The config holds the full list either way, so the line stays readable and
+ * points there for the tail rather than printing forty names.
+ */
+function nameList(names: readonly string[], limit = 10): string {
+  if (names.length <= limit) return names.join(', ');
+  return `${names.slice(0, limit).join(', ')} and ${names.length - limit} more`;
+}
+
+/**
  * Scaffold the `current:` block from what is on disk, and from Figma when a
  * file key is given.
  *
@@ -298,8 +309,8 @@ async function runInit(
     logger.trace(`init: ${figma.length} Figma component(s) found`);
   }
 
-  const plan = planComponents(code, figma);
-  const block = renderCurrentBlock(plan, args.figmaFileKey);
+  const { components: plan, figmaOnly } = planComponents(code, figma);
+  const block = renderCurrentBlock(plan, args.figmaFileKey, figmaOnly);
   writeAtomic(configPath, mergeIntoConfig(existing, block));
 
   const exact = plan.filter((c) => c.match === 'exact').length;
@@ -319,6 +330,14 @@ async function runInit(
       lines.push(`  ${unsure} left commented out: confirm the name before trusting them`);
     }
     if (unmatched > 0) lines.push(`  ${unmatched} with no Figma match`);
+    // The gap in the other direction, which init used to omit entirely: a
+    // component that looks finished in Figma and has no code behind it is the
+    // critical corner of the quadrant, so it is named here, not just counted.
+    if (figmaOnly.length > 0) {
+      lines.push(
+        `  ${figmaOnly.length} Figma component${figmaOnly.length === 1 ? '' : 's'} with no component source: ${nameList(figmaOnly.map((f) => f.name))}`,
+      );
+    }
   }
   lines.push('', 'Review it, then run `current` to score.');
   return lines.join('\n');

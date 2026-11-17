@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as yaml from 'js-yaml';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   discoverComponents,
@@ -58,6 +59,19 @@ const figmaNode = (id: string, name: string, page = 'Components') => ({
 });
 
 const codeComponent = (name: string, code: string): CodeComponent => ({ name, code, docs: null });
+
+/**
+ * Do what a reader does to a commented-out entry: take the `# ` off the
+ * indented lines and drop the prose, leaving the mapping behind. The point of
+ * writing those entries is that this produces a config that parses.
+ */
+function uncomment(yml: string): string {
+  return yml
+    .split('\n')
+    .filter((l) => !/^  # \S/.test(l))
+    .map((l) => l.replace(/^  # /, '  '))
+    .join('\n');
+}
 
 /**
  * Serve one Figma file document to `init --figma`.
@@ -226,8 +240,59 @@ describe('renderCurrentBlock', () => {
   it('still lists Figma components when the repo has no component source at all', () => {
     const { components, figmaOnly } = planComponents([], [figmaNode('4:5', 'Modal')]);
     const yml = renderCurrentBlock(components, 'FILEKEY', figmaOnly);
-    expect(yml).toContain('components: {}');
+    // `components:` and not `components: {}`: there are commented entries
+    // below that the reader is told to uncomment, and a block mapping cannot
+    // follow a flow one.
+    expect(yml).toContain('  components:\n');
+    expect(yml).not.toContain('components: {}');
     expect(yml).toContain('  #   Modal:');
+    expect(yaml.load(uncomment(yml))).toMatchObject({
+      current: { components: { Modal: { figma: '4:5' } } },
+    });
+  });
+
+  it('keeps writing components: {} when there is nothing to uncomment', () => {
+    expect(renderCurrentBlock([], 'FILEKEY', [])).toContain('components: {}');
+  });
+
+  // Figma layer names are unconstrained. A newline used to end the comment it
+  // was written into, leaving a line at column 0 and a config that would not
+  // parse — or one that parsed with a stray top-level key.
+  it('cannot be made to write a line outside the comment block', () => {
+    const { components, figmaOnly } = planComponents(
+      [],
+      [{ id: '4:5', name: 'Modal\nrogue: true', type: 'COMPONENT', page: 'Over\nlays' }],
+    );
+    const yml = renderCurrentBlock(components, 'FILEKEY', figmaOnly);
+    for (const line of yml.split('\n').slice(6)) {
+      expect(line.trimStart().startsWith('#')).toBe(true);
+    }
+    expect(() => yaml.load(yml)).not.toThrow();
+    expect(yml).toContain('"Modal rogue: true"');
+  });
+
+  it('quotes a name that would not survive uncommenting as a bare key', () => {
+    const { components, figmaOnly } = planComponents(
+      [],
+      [{ id: '4:5', name: 'Modal: large', type: 'COMPONENT', page: 'Overlays' }],
+    );
+    const yml = renderCurrentBlock(components, 'FILEKEY', figmaOnly);
+    expect(yml).toContain('  #   "Modal: large":');
+    expect(yaml.load(uncomment(yml))).toMatchObject({
+      current: { components: { 'Modal: large': { figma: '4:5' } } },
+    });
+  });
+
+  // Figma has no uniqueness rule for component names, and these entries are
+  // keyed by name, so two of them would collide once uncommented.
+  it('warns when two unmatched components share a name', () => {
+    const { components, figmaOnly } = planComponents(
+      [],
+      [figmaNode('4:5', 'Modal', 'Old'), figmaNode('4:6', 'Modal', 'New')],
+    );
+    const yml = renderCurrentBlock(components, 'FILEKEY', figmaOnly);
+    expect(yml).toContain('  #   Modal:   # name shared with 4:6 — uncomment only one');
+    expect(yml).toContain('  #   Modal:   # name shared with 4:5 — uncomment only one');
   });
 
   it('adds nothing when every Figma component matched', () => {

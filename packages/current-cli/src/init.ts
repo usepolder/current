@@ -172,13 +172,13 @@ export function planComponents(
         ...c,
         figma: hits[0].id,
         match: 'ambiguous',
-        note: `${hits.length} Figma components are named ${c.name}: ${hits.map((h) => `${h.id} on ${h.page || 'untitled page'}`).join(', ')}`,
+        note: `${hits.length} Figma components are named ${c.name}: ${hits.map((h) => `${h.id} on ${oneLine(h.page) || 'untitled page'}`).join(', ')}`,
       };
     }
     const near = loose.get(normalise(c.name)) ?? [];
     if (near.length === 1) {
       claim(near);
-      return { ...c, figma: near[0].id, match: 'fuzzy', note: `Figma calls this "${near[0].name}"` };
+      return { ...c, figma: near[0].id, match: 'fuzzy', note: `Figma calls this "${oneLine(near[0].name)}"` };
     }
     if (near.length > 1) {
       claim(near);
@@ -186,7 +186,7 @@ export function planComponents(
         ...c,
         figma: near[0].id,
         match: 'ambiguous',
-        note: `several Figma components resemble ${c.name}: ${near.map((h) => `"${h.name}" ${h.id}`).join(', ')}`,
+        note: `several Figma components resemble ${c.name}: ${near.map((h) => `"${oneLine(h.name)}" ${h.id}`).join(', ')}`,
       };
     }
     return { ...c, figma: null, match: 'none', note: null };
@@ -204,6 +204,31 @@ export function planComponents(
 
 function quote(v: string): string {
   return `"${v.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * Flatten a Figma-supplied string to one line before it goes into a comment.
+ *
+ * Figma layer names are unconstrained, and a newline in one used to end the
+ * comment it was being written into: the next line landed at column 0 and
+ * `init` wrote a `.polder.yml` that would not parse — or, worse, one that
+ * parsed with a stray top-level key. Everything here comes from someone
+ * else's design file, so nothing from it is allowed to end a line.
+ */
+function oneLine(v: string): string {
+  return v.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * A commented-out mapping key that is still valid once uncommented.
+ *
+ * A bare key is left bare, because that is what the reader expects to see.
+ * Anything with a colon, a hash or a space in it is quoted, since those make
+ * a plain YAML key ambiguous or invalid the moment the `#` comes off.
+ */
+function commentKey(name: string): string {
+  const flat = oneLine(name);
+  return /^[A-Za-z0-9_-]+$/.test(flat) && flat !== '' ? flat : quote(flat);
 }
 
 /**
@@ -238,8 +263,13 @@ export function renderCurrentBlock(
   }
 
   if (plan.length === 0) {
+    // `components: {}` only when there is nothing to uncomment beneath it: a
+    // block mapping cannot follow a flow one, so an orphan entry uncommented
+    // under `{}` would not parse, and the block below tells the reader to do
+    // exactly that. An empty `components:` is equivalent to the loader, which
+    // reads a null mapping as no components (core/src/config.ts parseComponents).
     lines.push(
-      '  components: {}',
+      figmaOnly.length === 0 ? '  components: {}' : '  components:',
       '  # No component source was found. `current init` looks for Button.tsx or',
       '  # Button/index.tsx, ignoring tests, stories and build output.',
     );
@@ -288,9 +318,24 @@ function renderFigmaOnly(figmaOnly: readonly FigmaOnlyComponent[]): string[] {
     '  # fill in its code: path and uncomment the entry; if it is genuinely',
     '  # unbuilt, leave this comment as the record of that.',
   ];
+  // Two unmatched components can share a name — Figma has no uniqueness rule
+  // — and the entries are keyed by that name, so uncommenting both would
+  // produce a duplicate YAML key. The reader cannot see the collision from
+  // two entries that differ only in a node id, so each one says so.
+  const sameName = new Map<string, FigmaOnlyComponent[]>();
   for (const f of figmaOnly) {
-    lines.push(`  #   ${f.name}:`);
-    lines.push(`  #     figma: ${quote(f.figma)}   # on ${f.page || 'untitled page'}`);
+    const key = oneLine(f.name);
+    sameName.set(key, [...(sameName.get(key) ?? []), f]);
+  }
+
+  for (const f of figmaOnly) {
+    const twins = (sameName.get(oneLine(f.name)) ?? []).filter((o) => o.figma !== f.figma);
+    const collision =
+      twins.length === 0
+        ? ''
+        : `   # name shared with ${twins.map((o) => o.figma).join(', ')} — uncomment only one`;
+    lines.push(`  #   ${commentKey(f.name)}:${collision}`);
+    lines.push(`  #     figma: ${quote(f.figma)}   # on ${oneLine(f.page) || 'untitled page'}`);
     lines.push('  #     code: ""   # no source file found — set this before uncommenting');
   }
   return lines;

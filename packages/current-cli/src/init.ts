@@ -266,7 +266,16 @@ export function renderCurrentBlock(
   return lines.join('\n');
 }
 
-/** The commented-out tail listing Figma components that matched no code. */
+/**
+ * The commented-out tail listing Figma components that matched no code.
+ *
+ * The header states what the list leaves out as well as what it holds. A
+ * reader who counts 40 components in Figma and 16 here cannot otherwise
+ * account for the difference without reconstructing the matching rule: nodes
+ * named in an uncertain mapping above are excluded, because the fact worth
+ * having about them — that some component in this codebase may be them — only
+ * exists next to that component.
+ */
 function renderFigmaOnly(figmaOnly: readonly FigmaOnlyComponent[]): string[] {
   if (figmaOnly.length === 0) return [];
   const n = figmaOnly.length;
@@ -274,7 +283,8 @@ function renderFigmaOnly(figmaOnly: readonly FigmaOnlyComponent[]): string[] {
     `  # ${n} Figma component${n === 1 ? '' : 's'} matched no component source. Current cannot`,
     '  # score a component it cannot find in code, so these are listed here rather',
     '  # than dropped: design being ahead of code is the gap worth seeing, not a',
-    '  # reason to leave it out of the file. If one of them does exist in code,',
+    '  # reason to leave it out of the file. Anything named in an unconfirmed',
+    '  # mapping above is not repeated here. If one of them does exist in code,',
     '  # fill in its code: path and uncomment the entry; if it is genuinely',
     '  # unbuilt, leave this comment as the record of that.',
   ];

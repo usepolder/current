@@ -105,6 +105,29 @@ on every component it looked at.
 
 **Checked automatically** — ARIA attributes present, text alternatives on non-text content, hardcoded colours and px values, component naming, code/Figma property parity, colour + type + spacing + radius token binding, layer naming, Auto Layout, prototype wiring, and whether each documented section exists.
 
+### Answering the manual metrics
+
+12 of the 32 need a person, and on a large system that is a lot of typing into
+YAML. `current export` writes exactly the questions still outstanding to a CSV,
+with the automated findings for that component's axis beside each one:
+
+| component | metric | guideline | answer | automated_evidence |
+| --- | --- | --- | --- | --- |
+| Button | CO1 | Component encompasses all necessary interaction states | | CO2 Yes: 2 elements carry aria-\* … \| CO5 Yes: all 1 non-text element … |
+
+Fill in the answer column, then `current import` folds it back into
+`.polder.answers.yml`. Three things follow from that shape:
+
+- **The review splits across people.** The 12 metrics are 7 code, 4 design and
+  1 documentation — an engineer, a designer and a writer. A sheet can go to
+  three people at once.
+- **A blank cell stays unanswered.** It does not become `N/A`. The report keeps
+  saying nobody has judged it, which is the honest thing for it to say.
+- **Resume is free.** Re-export after an import and the answered rows are gone:
+  the file only ever contains what is still outstanding.
+
+Columns are read by name, so sorting or adding columns in a spreadsheet is safe.
+
 **Left to a human** — interaction-state coverage, keyboard and screenreader behaviour, colour contrast, responsiveness, localisation, whether layers are *necessary*, and whether the docs are any good. Figma's REST API exposes no accessibility annotations (its `AnnotationsTrait` is an empty placeholder in the published OpenAPI spec), so anything resting on that is manual by necessity, not by laziness.
 
 The documentation checks look for a matching section heading, with synonyms and a tolerance for plurals. That proves a section exists, not that it says anything useful — a heading check is the honest ceiling for static analysis of prose. Matching is anchored to the start of a heading, so Button's "Icon Usage" does not satisfy "usage guidelines are documented". One thing it structurally cannot do is tell **not applicable** from **not documented**; only the person auditing knows which, which is why the manual answer always wins.
@@ -315,10 +338,13 @@ Things worth knowing:
 ```
 npx @usepolder/current [dir] [options]
 npx @usepolder/current init [dir] [--figma <file-key>]
+npx @usepolder/current export [dir] [--file <csv>]
+npx @usepolder/current import [dir] [--file <csv>]
 npx @usepolder/current figma list [dir]
 
 --json             Full report as JSON
 --figma <key>      init only: match component names against this Figma file
+--file <csv>       export/import only: the CSV path (default current-answers.csv)
 --out <file>       Where to write the HTML report (default current-report.html)
 --usage <file>     Reach JSON report, to rank what to fix first by use
 --no-report        Skip the HTML report

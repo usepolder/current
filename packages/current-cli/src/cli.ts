@@ -24,6 +24,7 @@ import {
   type CurrentReport,
 } from '@usepolder/current-core';
 import { figmaList } from './figma-list';
+import { buildExportRows, mergeAnswers, readImportRows, toCsv } from './answers-csv';
 import {
   discoverComponents,
   mergeIntoConfig,
@@ -37,9 +38,10 @@ import { renderTerminal } from './terminal';
 export const CONFIG_FILE = '.polder.yml';
 export const ANSWERS_FILE = '.polder.answers.yml';
 export const DEFAULT_REPORT_FILE = 'current-report.html';
+export const DEFAULT_ANSWERS_CSV = 'current-answers.csv';
 
 export interface CliArgs {
-  command: 'scan' | 'figma-list' | 'init' | 'help' | 'version';
+  command: 'scan' | 'figma-list' | 'init' | 'export' | 'import' | 'help' | 'version';
   dir: string;
   json: boolean;
   verbose: boolean;
@@ -49,12 +51,15 @@ export interface CliArgs {
   recordHistory: boolean;
   /** `init --figma <key>`: the Figma file to match component names against. */
   figmaFileKey: string | null;
+  /** `export`/`import`: the CSV path. Defaults to current-answers.csv. */
+  csvFile: string | null;
 }
 
 /**
  * Names that are never read as a directory.
  *
- * `scan`, `figma` and `init` are implemented; `answer` is not yet. They
+ * `scan`, `figma`, `init`, `export` and `import` are implemented; `answer`
+ * is not. They
  * are reserved anyway, because the alternative is worse in both directions:
  * `current init` used to fall through to the positional argument and silently
  * scan a directory called `init`, and once the command does land, the same
@@ -63,7 +68,7 @@ export interface CliArgs {
  *
  * A real directory with one of these names is still reachable: `current -- init`.
  */
-const IMPLEMENTED_COMMANDS = ['scan', 'figma', 'init'] as const;
+const IMPLEMENTED_COMMANDS = ['scan', 'figma', 'init', 'export', 'import'] as const;
 export const PLANNED_COMMANDS: readonly string[] = ['answer'];
 
 export const RESERVED_COMMANDS: readonly string[] = [
@@ -82,6 +87,7 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     noReport: false,
     recordHistory: false,
     figmaFileKey: null,
+    csvFile: null,
   };
 
   const rest = [...argv];
@@ -100,6 +106,9 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     rest.splice(0, 1);
   } else if (rest[0] === 'init') {
     args.command = 'init';
+    rest.splice(0, 1);
+  } else if (rest[0] === 'export' || rest[0] === 'import') {
+    args.command = rest[0];
     rest.splice(0, 1);
   } else if (rest[0] !== undefined && PLANNED_COMMANDS.includes(rest[0])) {
     throw new CurrentError(
@@ -140,6 +149,11 @@ export function parseArgs(argv: readonly string[]): CliArgs {
       if (value === undefined) throw new CurrentError('--out requires a file path');
       args.out = value;
       i += 1;
+    } else if (a === '--file') {
+      const value = rest[i + 1];
+      if (value === undefined) throw new CurrentError('--file requires a CSV path');
+      args.csvFile = value;
+      i += 1;
     } else if (a === '--figma') {
       const value = rest[i + 1];
       if (value === undefined) throw new CurrentError('--figma requires a Figma file key');
@@ -166,11 +180,14 @@ Usage
   npx @usepolder/current [dir] [options]
   npx @usepolder/current scan [dir] [options]
   npx @usepolder/current init [dir] [--figma <file-key>]
+  npx @usepolder/current export [dir] [--file <csv>]
+  npx @usepolder/current import [dir] [--file <csv>]
   npx @usepolder/current figma list [dir]
 
 Options
   --json             Print the full report as JSON instead of a summary
   --figma <key>      init only: match component names against this Figma file
+  --file <csv>       export/import only: the CSV path (default ${DEFAULT_ANSWERS_CSV})
   --out <file>       Where to write the HTML report (default ${DEFAULT_REPORT_FILE})
   --usage <file>     Reach JSON report; ranks what to fix first by how much each component is used
                      (or set \`usage:\` under \`current:\` in ${CONFIG_FILE})
@@ -194,6 +211,10 @@ Setup
   3. Review it, then run \`current\`.
 
 Answers for metrics that cannot be automated go in ${ANSWERS_FILE}.
+\`current export\` writes those questions to a CSV with the automated evidence
+beside each one, so the review can be split across the people who can actually
+answer it; \`current import\` folds the filled-in file back. An empty answer
+cell stays unanswered rather than becoming N/A.
 Nothing is sent anywhere except the Figma API you configure.`;
 
 function readFileIfExists(file: string): string | null {
@@ -303,6 +324,44 @@ async function runInit(
   return lines.join('\n');
 }
 
+/** Where the CSV lives, relative to where the user is standing. */
+function csvPath(args: CliArgs, io: RunIo): string {
+  const cwd = io.cwd ?? process.cwd();
+  return path.resolve(cwd, args.csvFile ?? DEFAULT_ANSWERS_CSV);
+}
+
+/**
+ * Fold a filled-in CSV back into the answers file.
+ *
+ * Deliberately does not scan: importing must work after the config has moved
+ * on, and a scan would fail on an unrelated problem while someone is trying
+ * to save a day of review work.
+ */
+function runImport(dir: string, args: CliArgs, io: RunIo): string {
+  const source = csvPath(args, io);
+  const raw = readFileIfExists(source);
+  if (raw === null) {
+    throw new CurrentError(
+      `No CSV at ${displayPath(source, io.cwd ?? process.cwd())}.\n` +
+        'Run `current export` first, fill in the answer column, then import it.',
+    );
+  }
+
+  const rows = readImportRows(raw);
+  if (rows.length === 0) {
+    return `${displayPath(source, io.cwd ?? process.cwd())} has no filled-in answers yet. Nothing changed.`;
+  }
+
+  const answersPath = path.join(dir, ANSWERS_FILE);
+  const merged = mergeAnswers(readFileIfExists(answersPath), rows);
+  writeAtomic(answersPath, merged.text);
+
+  const parts = [`${merged.added} added`];
+  if (merged.changed > 0) parts.push(`${merged.changed} changed`);
+  if (merged.unchanged > 0) parts.push(`${merged.unchanged} already matched`);
+  return `Wrote ${displayPath(answersPath, io.cwd ?? process.cwd())}\n  ${parts.join(', ')}`;
+}
+
 export interface RunIo {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
@@ -336,6 +395,11 @@ export async function run(argv: readonly string[], io: RunIo): Promise<number> {
   try {
     if (args.command === 'init') {
       io.stdout(`${await runInit(dir, args, io, logger)}\n`);
+      return 0;
+    }
+
+    if (args.command === 'import') {
+      io.stdout(`${runImport(dir, args, io)}\n`);
       return 0;
     }
 
@@ -399,7 +463,9 @@ export async function run(argv: readonly string[], io: RunIo): Promise<number> {
     }
 
     let reportPath: string | null = null;
-    if (!args.noReport && !args.json) {
+    // `export` scans only to collect the questions; writing an HTML report as
+    // a side effect would be a surprise.
+    if (!args.noReport && !args.json && args.command !== 'export') {
       reportPath = resolveReportPath(dir, args.out, io.cwd ?? process.cwd());
       const html = renderReport({ report, history: readHistory(dir) });
       try {
@@ -414,6 +480,24 @@ export async function run(argv: readonly string[], io: RunIo): Promise<number> {
               : `Cannot write the report to ${reportPath}: ${(err as Error).message}`,
         );
       }
+    }
+
+    if (args.command === 'export') {
+      const target = csvPath(args, io);
+      const rows = buildExportRows(report);
+      writeAtomic(target, toCsv(rows));
+      const where = displayPath(target, io.cwd ?? process.cwd());
+      if (rows.length === 0) {
+        io.stdout(`Nothing left for a person to answer. Wrote an empty ${where}.\n`);
+        return 0;
+      }
+      const components = new Set(rows.map((r) => r.component)).size;
+      io.stdout(
+        `Wrote ${where}\n` +
+          `  ${rows.length} question${rows.length === 1 ? '' : 's'} across ${components} component${components === 1 ? '' : 's'}\n` +
+          '  Fill in the answer column with Yes, No or N/A, then: current import\n',
+      );
+      return 0;
     }
 
     if (args.json) {

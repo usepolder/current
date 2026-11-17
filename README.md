@@ -378,7 +378,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: usepolder/current@v0.2.0
+      - uses: usepolder/current@v0.3.0
         env:
           CURRENT_FIGMA_TOKEN: ${{ secrets.CURRENT_FIGMA_TOKEN }}
 ```

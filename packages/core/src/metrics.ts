@@ -1,18 +1,34 @@
 /**
- * The 30 default metrics, transcribed from a production design system's "Component Health"
+ * The 28 default metrics, transcribed from a production design system's "Component Health"
  * audit sheet (Template tab). Teams can disable any of them or flip an
  * automated one to manual in `.polder.yml`; this is a starting point, not a
  * fixed rubric.
  *
- * Two of the sheet's norms are not here. DE8 ("all layers, groups and frames
- * are necessary") is tidiness: no reader of the quadrant acts on it, and no
- * API field answers it, so it was a permanent manual question whose only
- * effect was to make the design axis look unanswered. DE11 ("Figma component
- * reflects what's in code") asked exactly what CO12 asks, from the other
- * side, and a rubric that scores one claim twice weights it twice; CO12 keeps
- * it, now answered from Code Connect. Ids are never renumbered — DE9 stays
- * DE9 — so existing answer files keep pointing at the norms they were written
- * for, and the gap is the record of what was dropped.
+ * Four of the sheet's norms are not here, and this comment block is the
+ * record of why. Ids are never renumbered — DE9 stays DE9 — so existing
+ * answer files keep pointing at the norms they were written for, and each gap
+ * in the sequence is the record of what was dropped.
+ *
+ *   - DE8 ("all layers, groups and frames are necessary") is tidiness: no
+ *     reader of the quadrant acts on it, and no API field answers it, so it
+ *     was a permanent manual question whose only effect was to make the
+ *     design axis look unanswered.
+ *   - DE11 ("Figma component reflects what's in code") asked exactly what
+ *     CO12 asks, from the other side, and a rubric that scores one claim
+ *     twice weights it twice; CO12 keeps it, now answered from Code Connect.
+ *   - CO11 ("component is usable in all supported languages") is language
+ *     testing, which belongs to the design process rather than to a
+ *     component-health check. Its own note conceded the point: "can only be
+ *     checked in production". A norm that cannot be answered where the audit
+ *     runs is not a norm, it is a reminder — and it scored every adopter
+ *     anyway. What CO11 orphaned that WAS automatable is i18n key coverage;
+ *     that sits in TODOS.md, because being adjacent to a deleted norm does
+ *     not earn a metric.
+ *   - DO1 ("component statuses are up to date") is a relic of the first
+ *     design system this rubric was transcribed from. Status taxonomies are
+ *     per-system and plenty of systems have none, so the metric was
+ *     inapplicable for most adopters while still scoring them. Its removal
+ *     is what takes the documentation axis to fully automated.
  *
  * `check` is the id of an automated check, or null when only a human can
  * answer. Four input contracts are in play: static checks read the
@@ -154,14 +170,6 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     check: null,
   },
   {
-    id: 'CO11',
-    category: 'code',
-    subcategory: 'Localisation',
-    guideline: 'Component is usable in all supported languages',
-    note: 'Can only be checked in production',
-    check: null,
-  },
-  {
     id: 'CO12',
     category: 'code',
     subcategory: 'Quality',
@@ -261,13 +269,6 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
   // The doc checks look for a matching heading in the mapped doc file. That
   // proves a section exists, not that it is any good — `--verbose` prints the
   // exact headings searched so the result is never a black box.
-  {
-    id: 'DO1',
-    category: 'documentation',
-    subcategory: 'Quality',
-    guideline: 'Component statuses are up to date',
-    check: null,
-  },
   {
     id: 'DO2',
     category: 'documentation',

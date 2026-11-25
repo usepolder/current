@@ -80,17 +80,17 @@ score = Yes / (Yes + No)        N/A is excluded from the denominator
 
 That is deliberately the same arithmetic a spreadsheet audit uses, because the point is to replace the spreadsheet without changing what the number means.
 
-25 of the 30 are checked automatically. (This is the default set; [you can change it](#your-own-norms).) The rest need a person, and Current does not pretend otherwise: it reads your answers for those from a file you own.
+25 of the 28 are checked automatically. (This is the default set; [you can change it](#your-own-norms).) The rest need a person, and Current does not pretend otherwise: it reads your answers for those from a file you own.
 
-The audit sheet this came from had 32. Two are gone. **DE8**, "all layers, groups and frames are necessary", was tidiness: nobody acts on it from a quadrant, no API field answers it, and it sat permanently unanswered making the design axis look thinner than it was. **DE11**, "Figma component reflects what's in code", asked exactly what **CO12** asks from the other side — and a rubric that scores one claim twice weights it twice. CO12 keeps the claim and is now [answered from Code Connect](#5-connect-code-to-figma-optional). Ids are not renumbered, so the answers you have already written still point at the norms they were written for.
+The audit sheet this came from had 32. Four are gone. **DE8**, "all layers, groups and frames are necessary", was tidiness: nobody acts on it from a quadrant, no API field answers it, and it sat permanently unanswered making the design axis look thinner than it was. **DE11**, "Figma component reflects what's in code", asked exactly what **CO12** asks from the other side — and a rubric that scores one claim twice weights it twice. CO12 keeps the claim and is now [answered from Code Connect](#5-connect-code-to-figma-optional). **CO11**, "component is usable in all supported languages", was language testing, which belongs to the design process rather than here; its own note said it "can only be checked in production", and a norm that cannot be answered where the audit runs is a reminder, not a norm. **DO1**, "component statuses are up to date", was a relic of the one system this rubric was transcribed from: status taxonomies are per-system and plenty of systems have none, so it was inapplicable for most adopters while scoring them anyway. Ids are not renumbered, so the answers you have already written still point at the norms they were written for, and each gap in the sequence is the record of what was dropped.
 
 Those 25 are not spread evenly, and the axes are not equally trustworthy:
 
 | Axis | Automated | Checked against a human verdict? |
 | --- | --- | --- |
-| Code | 9 of 12 | **No.** Never, on any component. Four of the nine do not read source at all: CO1, CO3 and CO6 probe a browser, CO12 reads your Code Connect mappings. |
+| Code | 9 of 11 | **No.** Never, on any component. Four of the nine do not read source at all: CO1, CO3 and CO6 probe a browser, CO12 reads your Code Connect mappings. |
 | Design | 8 of 9 | Yes, per metric, against a hand-audited production system. |
-| Documentation | 8 of 9 | Not separately. Its checks match a heading, and the evidence string shows which heading matched. |
+| Documentation | 8 of 8 | Not separately. Its checks match a heading, and the evidence string shows which heading matched. |
 
 The code axis is the least automated and the only one whose automation has
 never been compared against a person answering the same question on real
@@ -120,7 +120,7 @@ reader here strips it when present and none requires it.
 
 ### Answering the manual metrics
 
-5 of the 30 need a person, and on a large system that is a lot of typing into
+3 of the 28 need a person, and on a large system that is a lot of typing into
 YAML. `current export` writes exactly the questions still outstanding to a CSV,
 with the automated findings for that component's axis beside each one:
 
@@ -141,7 +141,7 @@ Fill in the answer column, then `current import` folds it back into
 
 Columns are read by name, so sorting or adding columns in a spreadsheet is safe.
 
-**Left to a human** — whether a component that declares no interaction states at all needs any (Figma settles the question for every component that does declare them, as variant options or boolean properties; a browser probe can only ever prove one state missing, never a complete set), screenreader behaviour, colour contrast, localisation, and whether the docs are any good. Figma's REST API exposes no accessibility annotations (its `AnnotationsTrait` is an empty placeholder in the published OpenAPI spec), so anything resting on that is manual by necessity, not by laziness.
+**Left to a human** — whether a component that declares no interaction states at all needs any (Figma settles the question for every component that does declare them, as variant options or boolean properties; a browser probe can only ever prove one state missing, never a complete set), screenreader behaviour, colour contrast, and whether the component declares its own min/max bounds. Figma's REST API exposes no accessibility annotations (its `AnnotationsTrait` is an empty placeholder in the published OpenAPI spec), so anything resting on that is manual by necessity, not by laziness.
 
 The documentation checks look for a matching section heading, with synonyms and a tolerance for plurals. That proves a section exists, not that it says anything useful — a heading check is the honest ceiling for static analysis of prose. Matching is anchored to the start of a heading, so Button's "Icon Usage" does not satisfy "usage guidelines are documented". One thing it structurally cannot do is tell **not applicable** from **not documented**; only the person auditing knows which, which is why the manual answer always wins.
 
@@ -304,7 +304,7 @@ Button:
   CO1: Yes      # all the states it needs, including the six no probe can reach
   CO4: Yes      # screenreader announces it correctly
   DE2: No       # contrast fails AA
-  DO1: "N/A"
+  CO10: "N/A"   # takes whatever width it is given; nothing to declare
 ```
 
 Commit this. It is the audit trail — the record of what a human checked and when, reviewable in a PR like anything else.
@@ -325,13 +325,13 @@ current:
   usage: "reach.json"         # Reach JSON report; ranks "fix first" by use. Repo-relative
 
   metrics:
-    disable: ["CO11"]         # drop metrics that do not apply to you
+    disable: ["DO7"]          # drop metrics that do not apply to you
     manual: ["DO5"]           # force an automated metric to manual entry
 ```
 
 ## Your own norms
 
-The 30 metrics are a starting point, not a standard you have to adopt. Every organisation prioritises different things, so all of them can be changed, and you can add your own.
+The 28 metrics are a starting point, not a standard you have to adopt. Every organisation prioritises different things, so all of them can be changed, and you can add your own.
 
 ```yaml
 current:

@@ -36,8 +36,9 @@ export const CSV_HEADER = [
  * same axis**, which is the point of the whole exercise: you are not being
  * interrogated, you are being shown what the machine could determine and
  * asked to close the gap. Scoped to the axis rather than the subcategory
- * because most subcategories have no automated sibling at all — CO11
- * (localisation) and CO6 (responsiveness) would otherwise export blank.
+ * because plenty of subcategories hold exactly one norm — DE2 is the whole
+ * of design/A11y, and scoped to its subcategory it would export blank, with
+ * nothing of what the design checks did find beside it.
  */
 export function buildExportRows(report: CurrentReport): ExportRow[] {
   const rows: ExportRow[] = [];

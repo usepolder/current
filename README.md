@@ -80,16 +80,16 @@ score = Yes / (Yes + No)        N/A is excluded from the denominator
 
 That is deliberately the same arithmetic a spreadsheet audit uses, because the point is to replace the spreadsheet without changing what the number means.
 
-24 of the 30 are checked automatically. (This is the default set; [you can change it](#your-own-norms).) The rest need a person, and Current does not pretend otherwise: it reads your answers for those from a file you own.
+25 of the 30 are checked automatically. (This is the default set; [you can change it](#your-own-norms).) The rest need a person, and Current does not pretend otherwise: it reads your answers for those from a file you own.
 
 The audit sheet this came from had 32. Two are gone. **DE8**, "all layers, groups and frames are necessary", was tidiness: nobody acts on it from a quadrant, no API field answers it, and it sat permanently unanswered making the design axis look thinner than it was. **DE11**, "Figma component reflects what's in code", asked exactly what **CO12** asks from the other side — and a rubric that scores one claim twice weights it twice. CO12 keeps the claim and is now [answered from Code Connect](#5-connect-code-to-figma-optional). Ids are not renumbered, so the answers you have already written still point at the norms they were written for.
 
-Those 24 are not spread evenly, and the axes are not equally trustworthy:
+Those 25 are not spread evenly, and the axes are not equally trustworthy:
 
 | Axis | Automated | Checked against a human verdict? |
 | --- | --- | --- |
 | Code | 9 of 12 | **No.** Never, on any component. Four of the nine do not read source at all: CO1, CO3 and CO6 probe a browser, CO12 reads your Code Connect mappings. |
-| Design | 7 of 9 | Yes, per metric, against a hand-audited production system. |
+| Design | 8 of 9 | Yes, per metric, against a hand-audited production system. |
 | Documentation | 8 of 9 | Not separately. Its checks match a heading, and the evidence string shows which heading matched. |
 
 The code axis is the least automated and the only one whose automation has
@@ -105,11 +105,22 @@ behind its automation. The design-axis validation, by contrast, found a real
 bug — a check reading Figma bound-variable keys that Figma never emits, wrong
 on every component it looked at.
 
-**Checked automatically** — ARIA attributes present, text alternatives on non-text content, hardcoded colours and px values, component naming, code/Figma property parity, whether the code declares which Figma node it implements, colour + type + spacing + radius token binding, layer naming, Auto Layout, prototype wiring, whether each documented section exists, and — for components with a `preview:` URL — keyboard reachability, breakpoint overflow and hover/pressed/focus feedback, probed in a real browser.
+One design check carries a version of that same risk right now. **DE6** reads
+`variantOptions` off a variant property, which Figma's published OpenAPI spec
+declares on both `ComponentNode` and `ComponentSetNode` — but no run of this
+tool has yet seen that field come back from a real file, because the example
+system it dogfoods against has no Figma file behind it. The field is in the
+contract and the check is tested against the shape the contract describes;
+until a real file confirms it, that is a spec-backed check and not a
+file-backed one, which is a weaker thing. The `#1:2` suffix on property keys
+is the mirror image: observed on every real file, documented nowhere, so every
+reader here strips it when present and none requires it.
+
+**Checked automatically** — ARIA attributes present, text alternatives on non-text content, hardcoded colours and px values, component naming, code/Figma property parity, whether the code declares which Figma node it implements, colour + type + spacing + radius token binding, layer naming, Auto Layout, which interaction states the Figma component declares, whether those states are wired up, whether each documented section exists, and — for components with a `preview:` URL — keyboard reachability, breakpoint overflow and hover/pressed/focus feedback, probed in a real browser.
 
 ### Answering the manual metrics
 
-6 of the 30 need a person, and on a large system that is a lot of typing into
+5 of the 30 need a person, and on a large system that is a lot of typing into
 YAML. `current export` writes exactly the questions still outstanding to a CSV,
 with the automated findings for that component's axis beside each one:
 
@@ -120,7 +131,7 @@ with the automated findings for that component's axis beside each one:
 Fill in the answer column, then `current import` folds it back into
 `.polder.answers.yml`. Three things follow from that shape:
 
-- **The review splits across people.** The 6 metrics are 3 code, 2 design and
+- **The review splits across people.** The 5 metrics are 3 code, 1 design and
   1 documentation — an engineer, a designer and a writer. A sheet can go to
   three people at once.
 - **A blank cell stays unanswered.** It does not become `N/A`. The report keeps
@@ -130,7 +141,7 @@ Fill in the answer column, then `current import` folds it back into
 
 Columns are read by name, so sorting or adding columns in a spreadsheet is safe.
 
-**Left to a human** — which interaction states a component actually needs (a preview can prove a missing hover, pressed or focus state, not a complete set), screenreader behaviour, colour contrast, localisation, whether code and Figma really say the same thing, whether layers are *necessary*, and whether the docs are any good. Figma's REST API exposes no accessibility annotations (its `AnnotationsTrait` is an empty placeholder in the published OpenAPI spec), so anything resting on that is manual by necessity, not by laziness.
+**Left to a human** — whether a component that declares no interaction states at all needs any (Figma settles the question for every component that does declare them, as variant options or boolean properties; a browser probe can only ever prove one state missing, never a complete set), screenreader behaviour, colour contrast, localisation, and whether the docs are any good. Figma's REST API exposes no accessibility annotations (its `AnnotationsTrait` is an empty placeholder in the published OpenAPI spec), so anything resting on that is manual by necessity, not by laziness.
 
 The documentation checks look for a matching section heading, with synonyms and a tolerance for plurals. That proves a section exists, not that it says anything useful — a heading check is the honest ceiling for static analysis of prose. Matching is anchored to the start of a heading, so Button's "Icon Usage" does not satisfy "usage guidelines are documented". One thing it structurally cannot do is tell **not applicable** from **not documented**; only the person auditing knows which, which is why the manual answer always wins.
 
@@ -367,6 +378,7 @@ The checks a norm can name:
 | `code.forbids` | the component's source contains none of these | `text: [...]` |
 | `code.aria-attributes`, `code.text-alternatives`, `code.token-usage`, `code.semantic-name`, `code.figma-prop-parity`, `code.figma-connect` | as in [the metrics](#the-metrics) | none |
 | `design.color-tokens`, `design.type-tokens`, `design.spacing-tokens`, `design.radius-tokens` | as in [the metrics](#the-metrics) | `min_bound: 100` (optional) |
+| `design.interaction-states` | the Figma component declares every state in this list | `states: [hover, pressed, disabled]` (optional) |
 | `design.layer-names`, `design.prototyping`, `design.auto-layout` | as in [the metrics](#the-metrics) | none |
 
 A check must match its category: `code.*` scores a code norm, `design.*` a design norm, `docs.*` a documentation norm.
@@ -384,6 +396,17 @@ Things worth knowing:
   ```
 
   The evidence names the ratio either way, so `11 of 151 layer(s) use raw radius tokens` is visible whichever side of the threshold it falls. A threshold is rejected outside 1-100: at 0 a component binding nothing would answer Yes.
+- **`design.interaction-states` asks for three states, not nine.** DE6's guideline lists nine; the check defaults to `hover, pressed, disabled`, the ones anything a pointer can act on has to have. Asking for all of them would report a `No` on nearly every component in a healthy system, because most components legitimately need only some — which is exactly why this norm used to be a human's. Name the set your system actually models:
+
+  ```yaml
+  current:
+    metrics:
+      override:
+        DE6: { params: { states: [hover, pressed, focus, disabled, loading] } }
+  ```
+
+  A state counts as declared when a variant option names it (`State=Hover`) or a boolean property's name does (`Disabled`), matched against a synonym list — `active` is read as pressed, `busy` as loading, `checked` as selected, `invalid` as error. `focus` is not in the default because Figma files very often draw a focus ring as a shared overlay rather than a variant, and CO1 probes focus from the browser where it is actually visible. The evidence names which property expressed which state, and a component that declares **no** interaction state anywhere answers `N/A`, not `No`: nothing in the API distinguishes a Divider that needs none from a Button that forgot them.
+- **DE6 and DE9 ask different questions.** DE6 is *which states exist*, read off the component's property definitions. DE9 is *is this thing interactive at all* — satisfied by one state-named variant option, a `State` property, or a prototype interaction a user can trigger. A set whose only property is `Size` no longer satisfies DE9; it used to, which left the "interaction states" half of that guideline unenforced.
 - **`override` replaces, it does not extend.** Setting `params` swaps the whole list, so to add one heading to DO2 you repeat the defaults. Setting `check` without `params` on a check that needs them is an error.
 - **`override` changes what a built-in checks, not how it is scored.** You can reword it, re-tune its params, or point it at a different check. To move a norm to another category, disable it and add a custom one.
 - **Typos are errors, not silent no-ops.** An unknown key, an unknown check, a duplicate id, or a `check` in the wrong category fails with the path of the norm at fault.

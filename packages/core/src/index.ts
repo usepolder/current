@@ -61,11 +61,18 @@ export {
   type CodeConnectMapping,
 } from './code-connect';
 export {
+  DEFAULT_INTERACTION_STATES,
   DEFAULT_MIN_BOUND,
   DESIGN_CHECKS,
+  INTERACTION_STATES,
   MIN_BOUND_KEY,
+  STATES_KEY,
+  STATE_SYNONYMS,
+  checkInteractionStates,
+  checkPrototyping,
   figmaPropertyNames,
   flatten,
+  statesNamed,
   type DesignCheck,
   type DesignFacts,
 } from './figma-checks';

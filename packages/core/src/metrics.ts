@@ -28,6 +28,19 @@
  * `boundVariables`, `componentPropertyDefinitions`, `cornerRadius` and
  * `transitionNodeID` ARE returned, so the token/auto-layout/prototyping
  * checks are real.
+ *
+ * DE6 rests on one more field from the same spec, with a caveat worth
+ * recording: `ComponentPropertiesTrait` declares `variantOptions` ("all
+ * possible values for this property, only exists on VARIANT properties") on
+ * both `ComponentNode` and `ComponentSetNode`, so a `State` variant's options
+ * are spec-declared — but this project has not yet seen them on a live file,
+ * because the dogfood example has no real Figma file behind it. The `#1:2`
+ * suffix on property keys is the opposite case: observed on every real file,
+ * documented nowhere, which is why every reader here strips it when present
+ * and never requires it. That gap has bitten this codebase once already —
+ * the design-axis validation found a check reading bound-variable keys Figma
+ * never emits, wrong on every component it looked at — so DE6's first run
+ * against a real file is the evidence that still has to be collected.
  */
 
 export type MetricCategory = 'code' | 'design' | 'documentation';
@@ -207,7 +220,20 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     subcategory: 'Quality',
     guideline:
       'Includes interaction states (default, hover, pressed, focus, loading, selected, active, error, disabled)',
-    check: null,
+    // The mirror of CO1, and the one of the pair that CAN answer Yes. A
+    // Figma component set *declares* its states as variant options, so the
+    // set is enumerable: `variantOptions` on a `State` variant hands over
+    // ["Default", "Hover", "Pressed"] directly, and a `Disabled` boolean
+    // property names its state in its key. CO1 forces states in a browser
+    // and can only ever prove one missing.
+    //
+    // Which states to require is `params: { states: [...] }`, defaulting to
+    // hover, pressed and disabled rather than all nine — most components
+    // legitimately need only some, which is exactly why this norm was
+    // manual. A component naming no interaction state at all is still an
+    // N/A: nothing in the API distinguishes a Divider that needs none from a
+    // Button that forgot them.
+    check: 'design.interaction-states',
   },
   {
     id: 'DE7',

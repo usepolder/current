@@ -34652,6 +34652,8 @@ const yaml = __importStar(__nccwpck_require__(677));
 const docs_source_1 = __nccwpck_require__(560);
 const errors_1 = __nccwpck_require__(76);
 const code_checks_1 = __nccwpck_require__(1778);
+const live_checks_1 = __nccwpck_require__(875);
+const live_source_1 = __nccwpck_require__(2671);
 const figma_checks_1 = __nccwpck_require__(4149);
 const metrics_1 = __nccwpck_require__(1830);
 /** Bump when a change to the `current:` block would break configs in the wild. */
@@ -34686,16 +34688,32 @@ function readOptionalString(value, component, field) {
     }
     return value.trim();
 }
+/**
+ * `preview:` is a URL or nothing. A repo path is rejected outright rather
+ * than quietly ignored: a team that writes one has a mental model of this
+ * field that will not produce the scores they expect, and finding that out
+ * from a config error beats finding it out from a column of N/As.
+ */
+function readPreview(value, component) {
+    const url = readOptionalString(value, component, 'preview');
+    if (url === null)
+        return null;
+    if (!(0, live_source_1.isPreviewUrl)(url)) {
+        throw new errors_1.ConfigValidationError(`components.${component}.preview must be an http(s) URL that renders the component ` +
+            `(e.g. a Storybook story URL), not a path — got "${url}"`);
+    }
+    return url;
+}
 function parseComponents(raw) {
     if (raw === undefined || raw === null)
         return [];
     if (!isPlainObject(raw)) {
-        throw new errors_1.ConfigValidationError('`components` must be a mapping of component name to { code, figma, docs }');
+        throw new errors_1.ConfigValidationError('`components` must be a mapping of component name to { code, figma, docs, preview }');
     }
     const out = [];
     for (const [name, value] of Object.entries(raw)) {
         if (!isPlainObject(value)) {
-            throw new errors_1.ConfigValidationError(`components.${name} must be an object with code / figma / docs keys`);
+            throw new errors_1.ConfigValidationError(`components.${name} must be an object with code / figma / docs / preview keys`);
         }
         // A component with no mappings at all is legal: it is scored purely from
         // manual answers. That is how a team starts — the audit spreadsheet they
@@ -34707,6 +34725,7 @@ function parseComponents(raw) {
             code: readOptionalString(value.code, name, 'code'),
             figma: readOptionalString(value.figma, name, 'figma'),
             docs: readOptionalString(value.docs, name, 'docs'),
+            preview: readPreview(value.preview, name),
         });
     }
     return out;
@@ -34717,9 +34736,16 @@ const MIN_BOUND_SPEC = {
     key: figma_checks_1.MIN_BOUND_KEY,
     default: figma_checks_1.DEFAULT_MIN_BOUND,
 };
+/** Viewport widths a breakpoints norm probes. Optional: there is a default. */
+const WIDTHS_SPEC = {
+    kind: 'widths',
+    key: live_checks_1.WIDTHS_KEY,
+    default: live_checks_1.DEFAULT_BREAKPOINT_WIDTHS,
+};
 /** The checks a norm may name, and the `params` each takes. */
 const CHECK_PARAM = {
     ...Object.fromEntries(Object.keys(code_checks_1.CODE_CHECKS).map((id) => [id, null])),
+    ...Object.fromEntries(Object.keys(live_checks_1.LIVE_CHECKS).map((id) => [id, null])),
     ...Object.fromEntries(Object.keys(figma_checks_1.DESIGN_CHECKS).map((id) => [id, null])),
     'docs.section': { kind: 'strings', key: 'headings' },
     'code.contains': { kind: 'strings', key: 'text' },
@@ -34728,6 +34754,7 @@ const CHECK_PARAM = {
     'design.type-tokens': MIN_BOUND_SPEC,
     'design.spacing-tokens': MIN_BOUND_SPEC,
     'design.radius-tokens': MIN_BOUND_SPEC,
+    'code.breakpoints': WIDTHS_SPEC,
 };
 /** A check only sees its own source, so its id has to match the axis it scores. */
 const CHECK_PREFIX = {
@@ -34794,6 +34821,24 @@ function parseCheck(entry, category, where) {
                 `A threshold of 0 would answer Yes for a component binding nothing.`);
         }
         return { check, params: { [spec.key]: value } };
+    }
+    if (spec.kind === 'widths') {
+        // Optional, like `percent`: the check ships a default scale.
+        if (entry.params === undefined)
+            return { check };
+        const params = entry.params;
+        const list = isPlainObject(params) ? params[spec.key] : undefined;
+        if (!isPlainObject(params) ||
+            Object.keys(params).some((k) => k !== spec.key) ||
+            !Array.isArray(list) ||
+            list.length === 0 ||
+            !list.every((x) => typeof x === 'number' && Number.isFinite(x) && x >= 200 && x <= 4000)) {
+            throw new errors_1.ConfigValidationError(`${where}: check "${check}" takes params: { ${spec.key}: [viewport widths in px, ` +
+                `each from 200 to 4000] }. Default ${spec.default.join(', ')}. ` +
+                'Probe the edges of your own breakpoints — a layout breaks at a boundary.');
+        }
+        const widths = [...new Set(list)].sort((a, b) => a - b);
+        return { check, params: { [spec.key]: widths } };
     }
     const params = entry.params;
     const list = isPlainObject(params) ? params[spec.key] : undefined;
@@ -35101,18 +35146,32 @@ function extractHtmlHeadings(html) {
     return out;
 }
 /**
- * A heading satisfies a metric when it STARTS with one of the synonyms, on a
- * word boundary.
+ * Real docs often head one section with two topics, e.g. "Behaviour / States"
+ * or "Content & tone". Each side of such a separator is its own topic, so a
+ * heading is matched segment by segment.
+ */
+function headingSegments(heading) {
+    return heading
+        .split(/\s*(?:[/|&+,;•·—–]|\band\b|\bor\b)\s*/i)
+        .map((part) => part.trim())
+        .filter((part) => part !== '');
+}
+/**
+ * A heading satisfies a metric when one of its segments STARTS with one of the
+ * synonyms, on a word boundary.
  *
  * Start-anchored on purpose. A plain substring test let Button's "Icon Usage"
  * satisfy "usage guidelines are documented", which it does not — that section
  * is about icons, not about when to use the component. Requiring the synonym
- * at the front keeps "Usage", "Usage guidelines" and "When to use" while
- * dropping "Icon Usage".
+ * at the front of a segment keeps "Usage", "Usage guidelines", "When to use"
+ * and "Behaviour / States" while dropping "Icon Usage".
  */
 function headingMatches(heading, needle) {
-    const h = heading.toLowerCase().trim();
     const n = needle.toLowerCase().trim();
+    return headingSegments(heading).some((segment) => segmentMatches(segment, n));
+}
+function segmentMatches(segment, n) {
+    const h = segment.toLowerCase().trim();
     if (!h.startsWith(n))
         return false;
     // Tolerate a plural: real docs head a section "Variants" while the synonym
@@ -35917,8 +35976,8 @@ function lastEntry(entries) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.RendererUnavailableError = exports.DEFAULT_DOCS_CONCURRENCY = exports.renderDocsPages = exports.closeRenderer = exports.createPlaywrightRenderer = exports.isDocsUrl = exports.headingMatches = exports.extractHtmlHeadings = exports.extractHeadings = exports.checkDocSection = exports.flatten = exports.figmaPropertyNames = exports.MIN_BOUND_KEY = exports.DESIGN_CHECKS = exports.DEFAULT_MIN_BOUND = exports.normalisePropName = exports.collectCodePropNames = exports.CODE_CHECKS = exports.QUADRANT_LABELS = exports.round1 = exports.usagePriority = exports.weakestAxis = exports.averageConfidentScore = exports.averageScore = exports.quadrantFor = exports.scoreAnswers = exports.silentLogger = exports.createLogger = exports.collectRelatedFiles = exports.BABEL_OPTIONS = exports.parseSource = exports.lookupAnswer = exports.coerceAnswer = exports.parseAnswers = exports.DEFAULT_MIN_CONFIDENCE = exports.DEFAULT_THRESHOLD = exports.CURRENT_SCHEMA_VERSION = exports.resolveRepoPath = exports.resolveComponentPaths = exports.parseConfig = exports.metricKeys = exports.CATEGORIES = exports.DEFAULT_METRICS_BY_ID = exports.DEFAULT_METRICS = exports.FigmaError = exports.NoComponentsError = exports.PathTraversalError = exports.ConfigValidationError = exports.ParseError = exports.CurrentError = void 0;
-exports.HISTORY_FILE = exports.HISTORY_DIR = exports.metricsHash = exports.lastEntry = exports.historyPath = exports.entryFromReport = exports.readHistory = exports.appendHistory = exports.scanRepo = exports.MIN_REACH_SCHEMA = exports.resolveUsageFile = exports.loadUsage = exports.parseReachUsage = exports.metricsForCategory = exports.fixFirst = exports.axesNotFullyCovered = exports.countQuadrants = exports.SCHEMA_VERSION = exports.TOKEN_ENV_VAR = exports.FIGMA_API = exports.collectComponents = exports.FigmaClient = exports.RENDERER_INSTALL_HINT = void 0;
+exports.PROBE_VIEWPORT_HEIGHT = exports.DEFAULT_BREAKPOINT_WIDTHS = exports.requestedWidths = exports.checkBreakpoints = exports.checkKeyboardAccess = exports.LIVE_CHECKS = exports.headingMatches = exports.extractHtmlHeadings = exports.extractHeadings = exports.checkDocSection = exports.flatten = exports.figmaPropertyNames = exports.MIN_BOUND_KEY = exports.DESIGN_CHECKS = exports.DEFAULT_MIN_BOUND = exports.normalisePropName = exports.collectCodePropNames = exports.CODE_CHECKS = exports.QUADRANT_LABELS = exports.round1 = exports.usagePriority = exports.weakestAxis = exports.averageConfidentScore = exports.averageScore = exports.quadrantFor = exports.scoreAnswers = exports.silentLogger = exports.createLogger = exports.collectRelatedFiles = exports.BABEL_OPTIONS = exports.parseSource = exports.lookupAnswer = exports.coerceAnswer = exports.parseAnswers = exports.DEFAULT_MIN_CONFIDENCE = exports.DEFAULT_THRESHOLD = exports.CURRENT_SCHEMA_VERSION = exports.resolveRepoPath = exports.resolveComponentPaths = exports.parseConfig = exports.metricKeys = exports.CATEGORIES = exports.DEFAULT_METRICS_BY_ID = exports.DEFAULT_METRICS = exports.FigmaError = exports.NoComponentsError = exports.PathTraversalError = exports.ConfigValidationError = exports.ParseError = exports.CurrentError = void 0;
+exports.HISTORY_FILE = exports.HISTORY_DIR = exports.metricsHash = exports.lastEntry = exports.historyPath = exports.entryFromReport = exports.readHistory = exports.appendHistory = exports.scanRepo = exports.MIN_REACH_SCHEMA = exports.resolveUsageFile = exports.loadUsage = exports.parseReachUsage = exports.metricsForCategory = exports.fixFirst = exports.axesNotFullyCovered = exports.countQuadrants = exports.SCHEMA_VERSION = exports.TOKEN_ENV_VAR = exports.FIGMA_API = exports.collectComponents = exports.FigmaClient = exports.RENDERER_INSTALL_HINT = exports.RendererUnavailableError = exports.DEFAULT_DOCS_CONCURRENCY = exports.renderDocsPages = exports.closeRenderer = exports.createPlaywrightRenderer = exports.isDocsUrl = exports.PROBER_INSTALL_HINT = exports.ProberUnavailableError = exports.DEFAULT_PREVIEW_CONCURRENCY = exports.probeLivePages = exports.closeProber = exports.createPlaywrightProber = exports.isPreviewUrl = exports.WIDTHS_KEY = void 0;
 var errors_1 = __nccwpck_require__(76);
 Object.defineProperty(exports, "CurrentError", ({ enumerable: true, get: function () { return errors_1.CurrentError; } }));
 Object.defineProperty(exports, "ParseError", ({ enumerable: true, get: function () { return errors_1.ParseError; } }));
@@ -35974,6 +36033,22 @@ Object.defineProperty(exports, "checkDocSection", ({ enumerable: true, get: func
 Object.defineProperty(exports, "extractHeadings", ({ enumerable: true, get: function () { return docs_checks_1.extractHeadings; } }));
 Object.defineProperty(exports, "extractHtmlHeadings", ({ enumerable: true, get: function () { return docs_checks_1.extractHtmlHeadings; } }));
 Object.defineProperty(exports, "headingMatches", ({ enumerable: true, get: function () { return docs_checks_1.headingMatches; } }));
+var live_checks_1 = __nccwpck_require__(875);
+Object.defineProperty(exports, "LIVE_CHECKS", ({ enumerable: true, get: function () { return live_checks_1.LIVE_CHECKS; } }));
+Object.defineProperty(exports, "checkKeyboardAccess", ({ enumerable: true, get: function () { return live_checks_1.checkKeyboardAccess; } }));
+Object.defineProperty(exports, "checkBreakpoints", ({ enumerable: true, get: function () { return live_checks_1.checkBreakpoints; } }));
+Object.defineProperty(exports, "requestedWidths", ({ enumerable: true, get: function () { return live_checks_1.requestedWidths; } }));
+Object.defineProperty(exports, "DEFAULT_BREAKPOINT_WIDTHS", ({ enumerable: true, get: function () { return live_checks_1.DEFAULT_BREAKPOINT_WIDTHS; } }));
+Object.defineProperty(exports, "PROBE_VIEWPORT_HEIGHT", ({ enumerable: true, get: function () { return live_checks_1.PROBE_VIEWPORT_HEIGHT; } }));
+Object.defineProperty(exports, "WIDTHS_KEY", ({ enumerable: true, get: function () { return live_checks_1.WIDTHS_KEY; } }));
+var live_source_1 = __nccwpck_require__(2671);
+Object.defineProperty(exports, "isPreviewUrl", ({ enumerable: true, get: function () { return live_source_1.isPreviewUrl; } }));
+Object.defineProperty(exports, "createPlaywrightProber", ({ enumerable: true, get: function () { return live_source_1.createPlaywrightProber; } }));
+Object.defineProperty(exports, "closeProber", ({ enumerable: true, get: function () { return live_source_1.closeProber; } }));
+Object.defineProperty(exports, "probeLivePages", ({ enumerable: true, get: function () { return live_source_1.probeLivePages; } }));
+Object.defineProperty(exports, "DEFAULT_PREVIEW_CONCURRENCY", ({ enumerable: true, get: function () { return live_source_1.DEFAULT_PREVIEW_CONCURRENCY; } }));
+Object.defineProperty(exports, "ProberUnavailableError", ({ enumerable: true, get: function () { return live_source_1.ProberUnavailableError; } }));
+Object.defineProperty(exports, "PROBER_INSTALL_HINT", ({ enumerable: true, get: function () { return live_source_1.PROBER_INSTALL_HINT; } }));
 var docs_source_1 = __nccwpck_require__(560);
 Object.defineProperty(exports, "isDocsUrl", ({ enumerable: true, get: function () { return docs_source_1.isDocsUrl; } }));
 Object.defineProperty(exports, "createPlaywrightRenderer", ({ enumerable: true, get: function () { return docs_source_1.createPlaywrightRenderer; } }));
@@ -36009,6 +36084,504 @@ Object.defineProperty(exports, "lastEntry", ({ enumerable: true, get: function (
 Object.defineProperty(exports, "metricsHash", ({ enumerable: true, get: function () { return history_1.metricsHash; } }));
 Object.defineProperty(exports, "HISTORY_DIR", ({ enumerable: true, get: function () { return history_1.HISTORY_DIR; } }));
 Object.defineProperty(exports, "HISTORY_FILE", ({ enumerable: true, get: function () { return history_1.HISTORY_FILE; } }));
+
+
+/***/ }),
+
+/***/ 875:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.LIVE_CHECKS = exports.PROBE_VIEWPORT_HEIGHT = exports.DEFAULT_BREAKPOINT_WIDTHS = exports.WIDTHS_KEY = void 0;
+exports.requestedWidths = requestedWidths;
+exports.checkKeyboardAccess = checkKeyboardAccess;
+exports.checkBreakpoints = checkBreakpoints;
+/** `params: { widths: [...] }` on a breakpoints norm. */
+exports.WIDTHS_KEY = 'widths';
+/**
+ * Widths probed when a norm names none.
+ *
+ * Chosen to bracket the common CSS breakpoints rather than to sit on them:
+ * 320 is the narrowest viewport WCAG 1.4.10 expects to work, 1920 is the
+ * widest common desktop, and the rest are the phone / tablet / laptop sizes
+ * most systems already name. Teams with their own scale should set
+ * `params: { widths: [...] }` — the point is to probe the edges of each of
+ * YOUR breakpoints, since a layout breaks at the boundary, not in the middle
+ * of a range.
+ */
+exports.DEFAULT_BREAKPOINT_WIDTHS = [320, 375, 768, 1024, 1280, 1920];
+/** Viewport height used for every width. Tall enough not to force scroll. */
+exports.PROBE_VIEWPORT_HEIGHT = 900;
+function requestedWidths(params) {
+    const raw = params?.[exports.WIDTHS_KEY];
+    if (!Array.isArray(raw) || raw.length === 0)
+        return [...exports.DEFAULT_BREAKPOINT_WIDTHS];
+    return [...new Set(raw.filter((w) => typeof w === 'number' && w > 0))].sort((a, b) => a - b);
+}
+function describe(stop) {
+    const name = stop.name === '' ? '' : ` "${stop.name}"`;
+    const role = stop.role === null ? '' : `[role=${stop.role}]`;
+    return `<${stop.tag}${role}>${name}`;
+}
+/** The absence branch both checks share: no probe is never a failing score. */
+function noProbe(facts) {
+    switch (facts.absence) {
+        case 'no-prober':
+            return {
+                answer: 'N/A',
+                evidence: 'a preview URL is mapped, but no page renderer is installed — run ' +
+                    '`npm i -D playwright` and `npx playwright install chromium` to score it',
+            };
+        case 'unreachable':
+            return {
+                answer: 'N/A',
+                evidence: `preview could not be probed: ${facts.absenceDetail ?? 'unknown error'}`,
+            };
+        default:
+            return {
+                answer: 'N/A',
+                evidence: 'no preview URL mapped for this component — add `preview:` to score it',
+            };
+    }
+}
+/**
+ * CO3 — the component is reachable and operable by keyboard.
+ *
+ * Verdict order matters: an unreachable element is a worse failure than a
+ * missing focus ring, and reporting the ring first would bury it.
+ */
+function checkKeyboardAccess(facts) {
+    if (facts.probe === null)
+        return noProbe(facts);
+    const { interactiveCount, focusStops, unreachable } = facts.probe;
+    if (interactiveCount === 0) {
+        return {
+            answer: 'N/A',
+            evidence: 'preview renders no interactive elements — nothing to reach by keyboard',
+        };
+    }
+    if (unreachable.length > 0) {
+        return {
+            answer: 'No',
+            evidence: `${unreachable.length} of ${interactiveCount} interactive element(s) cannot be ` +
+                `reached by Tab: ${unreachable.slice(0, 5).join(', ')}`,
+        };
+    }
+    const invisible = focusStops.filter((s) => !s.focusVisible);
+    if (invisible.length > 0) {
+        return {
+            answer: 'No',
+            evidence: `${invisible.length} of ${focusStops.length} Tab stop(s) show no focus indicator ` +
+                `(WCAG 2.4.7): ${invisible.slice(0, 5).map(describe).join(', ')}`,
+        };
+    }
+    const custom = focusStops.filter((s) => !s.native);
+    if (custom.length > 0) {
+        return {
+            answer: 'N/A',
+            evidence: `all ${focusStops.length} Tab stop(s) are reachable with a visible focus indicator, ` +
+                `but ${custom.length} are custom widget(s) — their Space/Enter/arrow handling needs ` +
+                `a human: ${custom.slice(0, 5).map(describe).join(', ')}`,
+        };
+    }
+    return {
+        answer: 'Yes',
+        evidence: `all ${focusStops.length} interactive element(s) are Tab-reachable with a visible focus ` +
+            'indicator, and all are native controls (so Space/Enter/arrows come from the platform)',
+    };
+}
+/** CO6 — the component survives every breakpoint it is probed at. */
+function checkBreakpoints(facts, params) {
+    if (facts.probe === null)
+        return noProbe(facts);
+    const wanted = requestedWidths(params);
+    const { viewports } = facts.probe;
+    if (viewports.length === 0) {
+        return { answer: 'N/A', evidence: 'preview was probed at no widths' };
+    }
+    const probed = new Set(viewports.map((v) => v.width));
+    const missing = wanted.filter((w) => !probed.has(w));
+    if (missing.length > 0) {
+        return {
+            answer: 'N/A',
+            evidence: `preview was not probed at ${missing.join(', ')}px — rerun the scan`,
+        };
+    }
+    const failing = viewports.filter((v) => wanted.includes(v.width) && (v.horizontalScroll || v.overflowing.length > 0));
+    if (failing.length > 0) {
+        const detail = failing
+            .slice(0, 4)
+            .map((v) => {
+            const by = v.scrollWidth - v.clientWidth;
+            const culprits = v.overflowing.length > 0 ? ` (${v.overflowing.slice(0, 3).join(', ')})` : '';
+            return `${v.width}px: overflows by ${Math.max(by, 0)}px${culprits}`;
+        })
+            .join('; ');
+        return {
+            answer: 'No',
+            evidence: `content overflows the viewport at ${failing.length} of ${wanted.length} width(s) — ${detail}`,
+        };
+    }
+    return {
+        answer: 'Yes',
+        evidence: `no horizontal overflow at ${wanted.join(', ')}px`,
+    };
+}
+exports.LIVE_CHECKS = {
+    'code.keyboard': checkKeyboardAccess,
+    'code.breakpoints': checkBreakpoints,
+};
+
+
+/***/ }),
+
+/***/ 2671:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.ProberUnavailableError = exports.DEFAULT_PREVIEW_CONCURRENCY = exports.PROBER_INSTALL_HINT = void 0;
+exports.isPreviewUrl = isPreviewUrl;
+exports.createPlaywrightProber = createPlaywrightProber;
+exports.probeLivePages = probeLivePages;
+exports.closeProber = closeProber;
+const errors_1 = __nccwpck_require__(76);
+const logger_1 = __nccwpck_require__(9539);
+const live_checks_1 = __nccwpck_require__(875);
+/** `preview:` must be a URL — there is nothing to render about a file path. */
+function isPreviewUrl(value) {
+    return /^https?:\/\//i.test(value.trim());
+}
+const DEFAULT_TIMEOUT_MS = 20_000;
+/**
+ * How far to Tab before giving up.
+ *
+ * A component preview with more than this many stops is either a whole page
+ * mapped as a component or a focus trap, and both want a human. The cap also
+ * bounds the probe: each press is a round trip, so an unbounded walk on a
+ * misconfigured URL would hang the scan.
+ */
+const DEFAULT_MAX_TAB_STOPS = 60;
+exports.PROBER_INSTALL_HINT = 'Preview probing needs a page renderer. Install it once with `npm i -D playwright` ' +
+    'and `npx playwright install chromium`. Components with no `preview:` need nothing.';
+/**
+ * Elements a keyboard user is expected to reach.
+ *
+ * Roles are included alongside tags because a design system's own Button may
+ * well be a styled div — and if it is, that is precisely the case this check
+ * exists to catch.
+ */
+const INTERACTIVE_SELECTOR = [
+    'a[href]',
+    'button',
+    'input:not([type="hidden"])',
+    'select',
+    'textarea',
+    'summary',
+    '[tabindex]:not([tabindex="-1"])',
+    '[role="button"]',
+    '[role="link"]',
+    '[role="checkbox"]',
+    '[role="radio"]',
+    '[role="switch"]',
+    '[role="tab"]',
+    '[role="menuitem"]',
+    '[role="combobox"]',
+    '[role="slider"]',
+    '[role="textbox"]',
+].join(', ');
+const NATIVE_TAGS = ['button', 'a', 'input', 'select', 'textarea', 'summary'];
+/**
+ * Collect the interactive elements and their RESTING styles, stashed on
+ * `window` so the Tab walk can compare each focused element against how it
+ * looked before it had focus.
+ *
+ * Stashing on window rather than tagging the DOM with data-attributes on
+ * purpose: a probe that mutates the page it measures can change what it is
+ * measuring (attribute selectors, sibling counts), and this check's whole
+ * job is to report the page as the user gets it.
+ */
+const COLLECT_SCRIPT = (selector, nativeTags) => `
+(() => {
+  const vis = (el) => {
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none'
+      && el.getAttribute('aria-hidden') !== 'true' && !el.hasAttribute('disabled');
+  };
+  const style = (el) => {
+    const cs = getComputedStyle(el);
+    return {
+      outlineStyle: cs.outlineStyle, outlineWidth: cs.outlineWidth, outlineColor: cs.outlineColor,
+      boxShadow: cs.boxShadow, background: cs.backgroundColor, color: cs.color,
+      border: cs.borderColor + ' ' + cs.borderWidth, decoration: cs.textDecorationLine,
+    };
+  };
+  const name = (el) =>
+    (el.getAttribute('aria-label') || el.getAttribute('title') || el.value || el.textContent || '')
+      .replace(/\\s+/g, ' ').trim().slice(0, 40);
+  const describe = (el) => {
+    const role = el.getAttribute('role');
+    return '<' + el.tagName.toLowerCase() + (role ? '[role=' + role + ']' : '') + '>'
+      + (name(el) ? ' "' + name(el) + '"' : '');
+  };
+  const els = [...document.querySelectorAll(${JSON.stringify(selector)})].filter(vis);
+  window.__polderProbe = {
+    els,
+    resting: els.map(style),
+    seen: new Set(),
+    style,
+    name,
+    describe,
+    native: ${JSON.stringify(nativeTags)},
+  };
+  return els.length;
+})()
+`;
+/**
+ * Read the focused element, and decide whether focus is VISIBLE by comparing
+ * it to its own resting style.
+ *
+ * Comparing against the element's own earlier style, rather than looking for
+ * an outline, is what makes this work on real design systems: plenty of them
+ * suppress the UA outline and signal focus with a ring shadow, an inverted
+ * background or a thicker border. Any of those count. Nothing changing at
+ * all does not.
+ */
+const FOCUS_SCRIPT = `
+(() => {
+  const p = window.__polderProbe;
+  const el = document.activeElement;
+  if (!el || el === document.body || el === document.documentElement) return null;
+  const i = p.els.indexOf(el);
+  if (i !== -1) p.seen.add(i);
+  const now = p.style(el);
+  const was = i === -1 ? null : p.resting[i];
+  const outlineDrawn = now.outlineStyle !== 'none' && parseFloat(now.outlineWidth) > 0;
+  const changed = was === null
+    ? outlineDrawn
+    : outlineDrawn || now.boxShadow !== was.boxShadow || now.background !== was.background
+      || now.color !== was.color || now.border !== was.border
+      || now.decoration !== was.decoration;
+  return {
+    index: i,
+    tag: el.tagName.toLowerCase(),
+    role: el.getAttribute('role'),
+    name: p.name(el),
+    focusVisible: changed,
+    native: p.native.includes(el.tagName.toLowerCase()) && el.getAttribute('role') === null,
+  };
+})()
+`;
+const UNREACHED_SCRIPT = `
+(() => {
+  const p = window.__polderProbe;
+  return p.els.map((el, i) => (p.seen.has(i) ? null : p.describe(el))).filter((x) => x !== null);
+})()
+`;
+/**
+ * Measure overflow at the current viewport.
+ *
+ * `position: fixed` elements are excluded: an overlay or a sticky bar pinned
+ * to the viewport legitimately sits at its edge, and counting those produced
+ * a "No" on every component that renders a tooltip.
+ */
+const OVERFLOW_SCRIPT = `
+(() => {
+  const de = document.documentElement;
+  const limit = de.clientWidth;
+  const overflowing = [...document.querySelectorAll('body *')]
+    .filter((el) => {
+      const cs = getComputedStyle(el);
+      if (cs.position === 'fixed' || cs.visibility === 'hidden' || cs.display === 'none') return false;
+      return el.getBoundingClientRect().right > limit + 1;
+    })
+    .slice(0, 5)
+    .map((el) => {
+      const cls = (el.className && typeof el.className === 'string')
+        ? '.' + el.className.trim().split(/\\s+/)[0] : '';
+      return el.tagName.toLowerCase() + cls;
+    });
+  return {
+    horizontalScroll: de.scrollWidth > limit + 1,
+    scrollWidth: de.scrollWidth,
+    clientWidth: limit,
+    overflowing: [...new Set(overflowing)],
+  };
+})()
+`;
+/**
+ * A prober backed by Playwright, loaded lazily — same contract as
+ * `createPlaywrightRenderer`, and for the same reason: Playwright and its
+ * browser are hundreds of megabytes, and a team with no `preview:` mapped
+ * must never be asked to install them.
+ *
+ * One browser, one context per width. A context per width rather than
+ * `setViewportSize` on one page, because a component that reads its width at
+ * mount (a JS-driven layout, a container-query polyfill) answers differently
+ * on a resized page than on a fresh one at that size — and a fresh one is
+ * what the user gets.
+ */
+function createPlaywrightProber(opts = {}) {
+    const logger = opts.logger ?? logger_1.silentLogger;
+    const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const maxStops = opts.maxTabStops ?? DEFAULT_MAX_TAB_STOPS;
+    const load = opts.load ??
+        (async () => {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            return __nccwpck_require__(9336);
+        });
+    let browserPromise = null;
+    const browser = async () => {
+        if (browserPromise === null) {
+            browserPromise = (async () => {
+                let mod;
+                try {
+                    mod = await load();
+                }
+                catch (err) {
+                    throw err instanceof errors_1.CurrentError ? err : new ProberUnavailableError();
+                }
+                const chromium = mod.chromium;
+                if (chromium === undefined)
+                    throw new ProberUnavailableError();
+                logger.trace('preview: launching headless chromium');
+                return chromium.launch({ headless: true });
+            })();
+        }
+        return browserPromise;
+    };
+    const probe = async (url, widths) => {
+        const b = await browser();
+        const sorted = [...widths].sort((a, c) => a - c);
+        // The keyboard walk runs at the widest width: a layout that hides
+        // controls behind a burger menu at narrow widths would report them
+        // unreachable, which is a responsive-design finding, not a keyboard one.
+        const walkWidth = sorted[sorted.length - 1] ?? 1280;
+        const viewports = [];
+        let interactiveCount = 0;
+        let focusStops = [];
+        let unreachable = [];
+        for (const width of sorted) {
+            const ctx = await b.newContext({
+                viewport: { width, height: live_checks_1.PROBE_VIEWPORT_HEIGHT },
+            });
+            const page = await ctx.newPage();
+            try {
+                logger.trace(`preview: ${url} at ${width}px`);
+                await page.goto(url, { waitUntil: 'load', timeout });
+                // Web fonts land after load and change every box they touch, so
+                // measuring before they do reports overflow that is not there (and
+                // misses overflow that is).
+                await page.evaluate('document.fonts ? document.fonts.ready.then(() => true) : true');
+                const measured = (await page.evaluate(OVERFLOW_SCRIPT));
+                viewports.push({ width, height: live_checks_1.PROBE_VIEWPORT_HEIGHT, ...measured });
+                if (width === walkWidth) {
+                    const found = (await page.evaluate(COLLECT_SCRIPT(INTERACTIVE_SELECTOR, NATIVE_TAGS)));
+                    interactiveCount = typeof found === 'number' ? found : 0;
+                    focusStops = await walkTabStops(page, interactiveCount, maxStops);
+                    unreachable = (await page.evaluate(UNREACHED_SCRIPT)) ?? [];
+                }
+            }
+            finally {
+                await ctx.close().catch(() => undefined);
+            }
+        }
+        return { url, interactiveCount, focusStops, unreachable, viewports };
+    };
+    probe.close = async () => {
+        if (browserPromise === null)
+            return;
+        const b = await browserPromise.catch(() => null);
+        browserPromise = null;
+        if (b !== null)
+            await b.close().catch(() => undefined);
+    };
+    return probe;
+}
+/**
+ * Press Tab until focus comes back round, leaves the document, or the cap is
+ * hit, recording each stop.
+ *
+ * Stopping on a repeat is what makes the walk terminate on a focus trap
+ * without special-casing one: a trap cycles, and a cycle is a repeat. The
+ * budget is `stops + a small margin`, so a preview whose first Tab lands on
+ * browser chrome still gets a chance to enter the document.
+ */
+async function walkTabStops(page, interactiveCount, maxStops) {
+    const budget = Math.min(maxStops, Math.max(interactiveCount * 2 + 4, 8));
+    const stops = [];
+    const visited = new Set();
+    for (let i = 0; i < budget; i++) {
+        await page.keyboard.press('Tab');
+        const stop = (await page.evaluate(FOCUS_SCRIPT));
+        if (stop === null) {
+            // Focus is on the document body or browser chrome. Keep going: the
+            // next press may enter the page. If it never does, `unreachable`
+            // reports every element, which is the honest answer.
+            continue;
+        }
+        if (stop.index === -1) {
+            // Focusable, but not one of the elements we catalogued and took a
+            // resting style for — an iframe's chrome, a native media control. With
+            // no baseline to compare against, "is focus visible here" would be a
+            // guess, and a guess must not become a No. Walk past it.
+            continue;
+        }
+        if (visited.has(stop.index))
+            break;
+        visited.add(stop.index);
+        const { index: _index, ...rest } = stop;
+        stops.push(rest);
+        if (visited.size === interactiveCount)
+            break;
+    }
+    return stops;
+}
+/** Previews probed at once. Low: each one opens a context per width. */
+exports.DEFAULT_PREVIEW_CONCURRENCY = 2;
+/** Probe every preview URL, a couple at a time. Mirrors `renderDocsPages`. */
+async function probeLivePages(urls, prober, widths, opts = {}) {
+    const logger = opts.logger ?? logger_1.silentLogger;
+    const unique = [...new Set(urls)];
+    const out = new Map();
+    if (unique.length === 0)
+        return out;
+    const limit = Math.max(1, opts.concurrency ?? exports.DEFAULT_PREVIEW_CONCURRENCY);
+    logger.trace(`preview: probing ${unique.length} URL(s) at ${widths.length} width(s), ` +
+        `${Math.min(limit, unique.length)} at a time`);
+    let next = 0;
+    const worker = async () => {
+        while (next < unique.length) {
+            const url = unique[next++];
+            try {
+                out.set(url, { probe: await prober(url, widths) });
+            }
+            catch (err) {
+                // One preview failing must not abandon the rest — a pool, not
+                // Promise.all, for the same reason as renderDocsPages.
+                out.set(url, { error: err.message });
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(limit, unique.length) }, worker));
+    return out;
+}
+class ProberUnavailableError extends errors_1.CurrentError {
+    constructor() {
+        super(exports.PROBER_INSTALL_HINT);
+    }
+}
+exports.ProberUnavailableError = ProberUnavailableError;
+/** Close a prober if it holds a browser. Safe on any prober. */
+async function closeProber(prober) {
+    const close = prober?.close;
+    if (typeof close === 'function')
+        await close();
+}
 
 
 /***/ }),
@@ -36050,7 +36623,10 @@ exports.silentLogger = createLogger(false, () => { });
  * fixed rubric.
  *
  * `check` is the id of an automated check, or null when only a human can
- * answer. What is automatable was settled by probing Figma's published
+ * answer. Three input contracts are in play: static checks read the
+ * component's source, design checks read its Figma node, and `code.keyboard`
+ * / `code.breakpoints` probe a rendered `preview:` URL in a real browser —
+ * the only way to answer those two, and the reason they are no longer null. What is automatable was settled by probing Figma's published
  * OpenAPI spec (figma/rest-api-spec): `AnnotationsTrait` is declared with an
  * empty property bag, so the REST API exposes no accessibility annotations —
  * DE2 and the screenreader checks stay manual. `layoutMode`,
@@ -36084,9 +36660,12 @@ exports.DEFAULT_METRICS = [
         subcategory: 'A11y',
         guideline: 'Component is accessible by keyboard',
         note: 'Including space, enter and arrow keys to navigate or interact',
-        // Deliberately manual: native elements are keyboard-accessible with no
-        // explicit handler, so "no onKeyDown" would produce constant false "No"s.
-        check: null,
+        // Not answerable from source: native elements are keyboard-accessible
+        // with no explicit handler, so "no onKeyDown" would produce constant
+        // false "No"s. Answered instead by probing a rendered `preview:` — Tab
+        // reachability and a visible focus ring. Components with no preview
+        // mapped report N/A and stay a human's call.
+        check: 'code.keyboard',
     },
     {
         id: 'CO4',
@@ -36109,7 +36688,10 @@ exports.DEFAULT_METRICS = [
         category: 'code',
         subcategory: 'Responsiveness',
         guideline: 'Component is optimised for all breakpoints',
-        check: null,
+        // Probed, not read: whether a component overflows at 320px depends on
+        // its fonts and content, not on anything in its stylesheet. Needs a
+        // `preview:` URL; without one this reports N/A.
+        check: 'code.breakpoints',
     },
     {
         id: 'CO7',
@@ -36337,18 +36919,28 @@ function measures(m) {
 /**
  * One key per metric, for fingerprinting the rubric behind a score.
  *
- * A metric that is exactly the default contributes its bare id, so history
- * recorded before norms were customisable keeps its fingerprint. One that was
- * added, or changed in what it checks (its check, its params, its category),
- * contributes its id plus that — otherwise editing DO2's headings would move
- * every score while the trend line joined the two sides as if nothing changed.
- * Rewording a guideline changes no score and so changes no key.
+ * Every key carries what its metric measures — its category, its check and
+ * that check's params. Rewording a guideline, a note or a subcategory changes
+ * no score and so changes no key, and a reordered heading list is not a new
+ * rubric either (see `stable`).
+ *
+ * This used to emit a BARE id for any metric matching the shipped default, to
+ * keep fingerprints stable for history recorded before norms were
+ * customisable. That had the fingerprint describe *which* norms were enabled
+ * rather than what they measure, and it left one kind of rubric change
+ * invisible: the kind Current itself ships. When CO3 went from "a human
+ * answers this" to "a browser probes it", every config using the default
+ * produced the same bare `CO3` before and after, so the trend line joined a
+ * hand-audited score to a probed one as though they were the same measurement.
+ * They are not, and the line now breaks there.
+ *
+ * The cost is one break per repo at the upgrade that introduced this, plus one
+ * on any later release that changes what a built-in checks. That is the honest
+ * reading: the rubric did change, and a visible reset beats a continuous line
+ * through two different measurements.
  */
 function metricKeys(metrics) {
-    return metrics.map((m) => {
-        const base = exports.DEFAULT_METRICS_BY_ID.get(m.id);
-        return base !== undefined && measures(base) === measures(m) ? m.id : `${m.id}:${measures(m)}`;
-    });
+    return metrics.map((m) => `${m.id}:${measures(m)}`);
 }
 
 
@@ -36681,6 +37273,8 @@ const config_1 = __nccwpck_require__(7369);
 const docs_checks_1 = __nccwpck_require__(6556);
 const docs_source_1 = __nccwpck_require__(560);
 const errors_1 = __nccwpck_require__(76);
+const live_checks_1 = __nccwpck_require__(875);
+const live_source_1 = __nccwpck_require__(2671);
 const figma_checks_1 = __nccwpck_require__(4149);
 const logger_1 = __nccwpck_require__(9539);
 const metrics_1 = __nccwpck_require__(1830);
@@ -36743,6 +37337,21 @@ async function scanRepo(opts) {
             logger,
         });
     }
+    // Probed up front like the docs pages, and for the same reason: a browser
+    // launch amortised over every component beats one per component. The
+    // widths come from config, so the probe measures what the norms will ask
+    // about rather than a fixed scale nobody configured.
+    const widths = breakpointWidths(config);
+    let previews = new Map();
+    if (opts.probeLive !== undefined && opts.probeLive !== null) {
+        const urls = config.components
+            .map((c) => c.preview)
+            .filter((p) => p !== null);
+        previews = await (0, live_source_1.probeLivePages)(urls, opts.probeLive, widths, {
+            ...(opts.previewConcurrency === undefined ? {} : { concurrency: opts.previewConcurrency }),
+            logger,
+        });
+    }
     const loaded = [];
     for (const mapping of config.components) {
         const paths = resolvedPaths.get(mapping.name);
@@ -36767,6 +37376,7 @@ async function scanRepo(opts) {
             logger.trace(`${mapping.name}: code file missing at ${mapping.code}`);
         }
         const docs = loadDocs(mapping.name, paths.docs, opts, docsPages, logger);
+        const live = loadPreview(mapping.name, mapping.preview, opts, previews, logger);
         loaded.push({
             name: mapping.name,
             codePath: mapping.code,
@@ -36777,6 +37387,10 @@ async function scanRepo(opts) {
             docsHeadings: docs.headings,
             docsAbsence: docs.absence,
             docsAbsenceDetail: docs.detail,
+            previewUrl: mapping.preview,
+            probe: live.probe,
+            probeAbsence: live.absence,
+            probeAbsenceDetail: live.detail,
             figmaNode: mapping.figma === null ? null : figmaNodes.get(mapping.figma) ?? null,
         });
     }
@@ -36906,6 +37520,54 @@ function loadDocs(component, docs, opts, pages, logger) {
     logger.trace(`${component}: ${headings.length} heading(s) from ${docs}`);
     return { headings, absence: null };
 }
+/**
+ * Pick up a component's browser probe.
+ *
+ * Every failure path here is N/A, never No. A preview that would not load
+ * tells us nothing about the component's keyboard support, and scoring it
+ * No would mean a broken Storybook build quietly tanking the code axis of
+ * every component in the system.
+ */
+function loadPreview(component, preview, opts, previews, logger) {
+    if (preview === null)
+        return { probe: null, absence: 'unmapped' };
+    if (opts.probeLive === undefined || opts.probeLive === null) {
+        logger.trace(`${component}: preview mapped but no prober was provided`);
+        return { probe: null, absence: 'no-prober' };
+    }
+    const probed = previews.get(preview);
+    if (probed === undefined) {
+        // Same defensive branch as loadDocs: a disagreement between the prefetch
+        // and this lookup is our bug, and must not read as a verdict.
+        logger.trace(`${component}: ${preview} was never probed`);
+        return { probe: null, absence: 'unreachable', detail: 'preview was not probed' };
+    }
+    if ('error' in probed) {
+        logger.trace(`${component}: preview probe failed — ${probed.error}`);
+        return { probe: null, absence: 'unreachable', detail: probed.error };
+    }
+    logger.trace(`${component}: probed ${preview} — ${probed.probe.interactiveCount} interactive element(s), ` +
+        `${probed.probe.viewports.length} width(s)`);
+    return { probe: probed.probe, absence: null };
+}
+/**
+ * Every width any enabled breakpoints norm asks about.
+ *
+ * A union rather than the first norm's list: a config may well score two
+ * different breakpoint norms (say, one overridden for a narrow utility
+ * component), and probing one scale would leave the other reporting "not
+ * probed at that width" forever.
+ */
+function breakpointWidths(config) {
+    const all = new Set();
+    for (const metric of config.metrics) {
+        if (metric.check === 'code.breakpoints') {
+            for (const w of (0, live_checks_1.requestedWidths)(metric.params))
+                all.add(w);
+        }
+    }
+    return [...all].sort((a, b) => a - b);
+}
 function scoreComponent(c, config, answers, logger, ctx) {
     const results = [];
     const codeFacts = c.ast === null
@@ -37005,6 +37667,21 @@ function scoreComponent(c, config, answers, logger, ctx) {
     };
 }
 function runCheck(checkId, params, args) {
+    // Probe-backed norms first: they are `code.*` by category but read a
+    // rendered page, not an AST, so a component with no code mapped can still
+    // be scored from its preview.
+    const live = live_checks_1.LIVE_CHECKS[checkId];
+    if (live) {
+        const facts = {
+            componentName: args.component.name,
+            probe: args.component.probe,
+            absence: args.component.probeAbsence,
+            ...(args.component.probeAbsenceDetail === undefined
+                ? {}
+                : { absenceDetail: args.component.probeAbsenceDetail }),
+        };
+        return live(facts, params);
+    }
     if (checkId.startsWith('code.')) {
         if (args.codeFacts === null) {
             return {
@@ -37636,7 +38313,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.BrowserSetupError = exports.PLAYWRIGHT_CORE_VERSION = void 0;
 exports.defaultDeps = defaultDeps;
 exports.createBrowserLoader = createBrowserLoader;
-exports.createActionRenderer = createActionRenderer;
+exports.createActionBrowsers = createActionBrowsers;
 const child_process_1 = __nccwpck_require__(5317);
 const fs = __importStar(__nccwpck_require__(9896));
 const module_1 = __nccwpck_require__(3339);
@@ -37687,7 +38364,7 @@ function createBrowserLoader(deps) {
     return async () => {
         const pkg = path.join(deps.dir, 'node_modules', 'playwright-core', 'package.json');
         if (!deps.exists(pkg)) {
-            deps.warn(`Current: installing playwright-core@${exports.PLAYWRIGHT_CORE_VERSION} to render hosted docs`);
+            deps.warn(`Current: installing playwright-core@${exports.PLAYWRIGHT_CORE_VERSION} to render hosted pages`);
             try {
                 await deps.run('npm', [
                     'install',
@@ -37701,7 +38378,7 @@ function createBrowserLoader(deps) {
                 ]);
             }
             catch (err) {
-                throw new BrowserSetupError(`could not install playwright-core on the runner (${err.message}), so hosted docs were not read`);
+                throw new BrowserSetupError(`could not install playwright-core on the runner (${err.message}), so hosted pages were not read`);
             }
         }
         const mod = deps.requireFrom(deps.dir, 'playwright-core');
@@ -37727,15 +38404,27 @@ function createBrowserLoader(deps) {
                         return await chromium.launch(opts);
                     }
                     catch (err) {
-                        throw new BrowserSetupError(`no Chrome on the runner and Chromium could not be installed (${err.message}), so hosted docs were not read`);
+                        throw new BrowserSetupError(`no Chrome on the runner and Chromium could not be installed (${err.message}), so hosted pages were not read`);
                     }
                 },
             },
         };
     };
 }
-function createActionRenderer(logger, deps) {
-    return (0, current_core_1.createPlaywrightRenderer)({ logger, load: createBrowserLoader(deps) });
+/**
+ * Renderer and prober off ONE loader.
+ *
+ * A single loader instance matters: it is what makes the on-demand install
+ * happen at most once per run. Two loaders would each check and each warn,
+ * and a repo with both hosted docs and a hosted preview would tell the user
+ * twice that a driver is being installed.
+ */
+function createActionBrowsers(logger, deps) {
+    const load = createBrowserLoader(deps);
+    return {
+        renderer: (0, current_core_1.createPlaywrightRenderer)({ logger, load }),
+        prober: (0, current_core_1.createPlaywrightProber)({ logger, load }),
+    };
 }
 
 
@@ -37848,9 +38537,14 @@ async function run() {
     // Only a URL-mapped docs page needs a browser; a repo without one never
     // triggers the on-demand install.
     const logger = (0, current_core_1.createLogger)(verbose, (line) => core.debug(line));
-    const renderDocs = config.components.some((c) => c.docs !== null && (0, current_core_1.isDocsUrl)(c.docs))
-        ? (0, docs_runtime_1.createActionRenderer)(logger, (0, docs_runtime_1.defaultDeps)((m) => core.warning(m)))
+    const needsRenderer = config.components.some((c) => c.docs !== null && (0, current_core_1.isDocsUrl)(c.docs));
+    const needsProber = config.components.some((c) => c.preview !== null);
+    const browsers = needsRenderer || needsProber
+        ? (0, docs_runtime_1.createActionBrowsers)(logger, (0, docs_runtime_1.defaultDeps)((m) => core.warning(m)))
         : null;
+    const renderDocs = needsRenderer ? browsers.renderer : null;
+    // A localhost preview cannot work on a runner, but a deployed Storybook can.
+    const probeLive = needsProber ? browsers.prober : null;
     const usageFile = (0, current_core_1.resolveUsageFile)(config, workdir);
     const usage = usageFile === null ? null : (0, current_core_1.loadUsage)(usageFile);
     if (usage !== null)
@@ -37864,11 +38558,13 @@ async function run() {
             usage,
             figma: buildFigmaClient(config, verbose),
             renderDocs,
+            probeLive,
             logger,
         });
     }
     finally {
         await (0, current_core_1.closeRenderer)(renderDocs);
+        await (0, current_core_1.closeProber)(probeLive);
     }
     const t = report.totals;
     core.info(`Current: overall ${t.overall === null ? '—' : `${t.overall.toFixed(1)}%`} ` +
@@ -37893,8 +38589,10 @@ async function run() {
     if (previous !== null && previous.metricsHash !== undefined) {
         const currentHash = (0, current_core_1.entryFromReport)(report, (0, current_core_1.metricKeys)(config.metrics)).metricsHash;
         if (previous.metricsHash !== currentHash) {
-            core.warning('Current: the metric set changed since the last recorded scan, so the delta compares ' +
-                'two different rubrics. Treat it as a reset, not a regression.');
+            core.warning('Current: the rubric changed since the last recorded scan — a norm was added, ' +
+                'removed, re-tuned or flipped between manual and automated, or Current itself was ' +
+                'upgraded to check something differently. The delta compares two different rubrics, ' +
+                'so treat it as a reset, not a regression.');
         }
     }
     const body = (0, comment_1.renderComment)(report, baseScore, pr?.base?.ref ?? null);

@@ -22,6 +22,11 @@ export const PLAYWRIGHT_CORE_VERSION = '1.63.0';
 /** Same rule as PLAYWRIGHT_CORE_VERSION: pinned, so what runs is what was reviewed. */
 export const VIRTUAL_SCREEN_READER_VERSION = '0.33.0';
 
+/** Same rule again. The engine on its own, not the `accessibility-checker`
+ * wrapper, which would drag in puppeteer, chromedriver and a telemetry
+ * package to drive a browser this Action already has. */
+export const CONTRAST_ENGINE_VERSION = '4.0.35';
+
 const execFileAsync = promisify(execFile);
 
 /** Everything that touches the machine, injectable so tests never install or launch anything. */
@@ -188,6 +193,50 @@ export function createScreenReaderLoader(deps: RuntimeDeps): () => Promise<strin
 }
 
 /**
+ * Get the WCAG engine's browser bundle onto the runner and hand back its
+ * source.
+ *
+ * Returns null on every failure path, for the same reason
+ * `createScreenReaderLoader` does: CO13 already has a verdict that means "we
+ * could not look", and a missing engine must never read as a component that
+ * fails its contrast norm.
+ */
+export function createContrastEngineLoader(deps: RuntimeDeps): () => Promise<string | null> {
+  const bundlePath = (): string =>
+    path.join(deps.dir, 'node_modules', 'accessibility-checker-engine', 'ace.js');
+
+  return async () => {
+    if (!deps.exists(bundlePath())) {
+      deps.warn(
+        `Current: installing accessibility-checker-engine@${CONTRAST_ENGINE_VERSION} to score CO13`,
+      );
+      try {
+        await deps.run('npm', [
+          'install',
+          '--prefix',
+          deps.dir,
+          `accessibility-checker-engine@${CONTRAST_ENGINE_VERSION}`,
+          '--no-audit',
+          '--no-fund',
+          '--ignore-scripts',
+          '--loglevel=error',
+        ]);
+      } catch (err) {
+        deps.warn(
+          `Current: could not install the contrast engine (${(err as Error).message}) — CO13 reports N/A`,
+        );
+        return null;
+      }
+    }
+    try {
+      return deps.readFile(bundlePath());
+    } catch {
+      return null;
+    }
+  };
+}
+
+/**
  * Renderer and prober off ONE loader.
  *
  * A single loader instance matters: it is what makes the on-demand install
@@ -201,8 +250,9 @@ export function createActionBrowsers(
 ): { renderer: PageRenderer; prober: PageProber } {
   const load = createBrowserLoader(deps);
   const loadScreenReader = createScreenReaderLoader(deps);
+  const loadContrastEngine = createContrastEngineLoader(deps);
   return {
     renderer: createPlaywrightRenderer({ logger, load }),
-    prober: createPlaywrightProber({ logger, load, loadScreenReader }),
+    prober: createPlaywrightProber({ logger, load, loadScreenReader, loadContrastEngine }),
   };
 }

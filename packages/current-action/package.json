@@ -10,7 +10,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p . && ncc build lib/index.js -o dist --license licenses.txt --external playwright --external @guidepup/virtual-screen-reader"
+    "build": "tsc -p . && ncc build lib/index.js -o dist --license licenses.txt --external playwright --external @guidepup/virtual-screen-reader --external accessibility-checker-engine"
   },
   "dependencies": {
     "@actions/core": "^1.10.1",

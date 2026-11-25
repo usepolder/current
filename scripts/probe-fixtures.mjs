@@ -178,9 +178,76 @@ const EXPANSION_CASES = [
   ['no text at all', '<div style="width:40px;height:40px;background:#ccc"></div>', 'N/A'],
 ];
 
+/**
+ * [label, body, expected CO13 answer]
+ *
+ * Every expectation was read off the engine's own reason codes first. The
+ * three `potential_*` cases are the reason this norm is worth having: the
+ * engine declines to commit where the effective background is not
+ * determinable, rather than guessing, and a guess on contrast would be wrong
+ * in one direction or the other.
+ */
+const CONTRAST_CASES = [
+  [
+    'passing contrast',
+    '<p style="color:#111;background:#fff;font:16px sans-serif">Readable text here</p>',
+    'Yes',
+  ],
+  [
+    'failing contrast',
+    '<p style="color:#bbb;background:#fff;font:16px sans-serif">Faint text here</p>',
+    'No',
+  ],
+  // The AA threshold is lower for large text, and the engine knows it: this
+  // grey fails at 16px and passes at bold 24px.
+  [
+    'large text clears a lower bar',
+    '<p style="color:#949494;background:#fff;font:bold 24px sans-serif">Big text</p>',
+    'Yes',
+  ],
+  [
+    'small text fails the same grey',
+    '<p style="color:#949494;background:#fff;font:16px sans-serif">Small text</p>',
+    'No',
+  ],
+  [
+    'failing button label',
+    '<button style="color:#ccc;background:#fff;font:14px sans-serif;border:1px solid #eee">Save</button>',
+    'No',
+  ],
+
+  // --- the engine will not commit, so neither does the norm ---
+  [
+    'same colour both ways',
+    '<p style="color:#fff;background:#fff;font:16px sans-serif">Invisible</p>',
+    'N/A',
+  ],
+  [
+    'text over an image',
+    '<p style="color:#888;background:url(data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACwAAAAAAQABAAACAkQBADs=);font:16px sans-serif">On an image</p>',
+    'N/A',
+  ],
+  [
+    'text with a shadow',
+    '<p style="color:#999;background:#fff;text-shadow:0 0 2px #000;font:16px sans-serif">Shadowed</p>',
+    'N/A',
+  ],
+  // A real failure outranks an unmeasurable element: the No is a finding and
+  // the N/A is an absence of one.
+  [
+    'one failing, one unmeasurable',
+    '<p style="color:#bbb;background:#fff;font:16px sans-serif">Faint</p>' +
+      '<p style="color:#999;background:#fff;text-shadow:0 0 2px #000;font:16px sans-serif">Shadowed</p>',
+    'No',
+  ],
+
+  ['no text at all', '<div style="width:40px;height:40px;background:#ccc"></div>', 'N/A'],
+];
+
 const SUITES = [
   { name: 'CO4  code.screenreader', check: 'code.screenreader', cases: SCREEN_READER_CASES, width: 1280 },
   { name: 'CO10 code.text-expansion', check: 'code.text-expansion', cases: EXPANSION_CASES, width: 400 },
+  { name: 'CO13 code.contrast', check: 'code.contrast', cases: CONTRAST_CASES, width: 800 },
 ];
 
 /** Every case across every suite, so one server can serve them all. */
@@ -236,6 +303,11 @@ for (const suite of SUITES) {
         );
       }
       for (const s of probe.screenReader?.silent ?? []) console.log(`          silent: ${s}`);
+      for (const f of probe.contrast?.findings ?? []) {
+        console.log(
+          `          <${f.tag}> resolved=${f.resolved} passes=${f.passes} ${f.message}`,
+        );
+      }
       for (const e of probe.expansion ?? []) {
         console.log(
           `          ${e.width}px nodes=${e.textNodes} chars=${e.chars} vp=${e.viewportOverflow}` +

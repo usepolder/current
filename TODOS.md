@@ -9,11 +9,11 @@ Revisiting one is cheap. Each entry says what would have to change first.
 
 ## Validating the automated checks against something other than ourselves
 
-27 of the 28 metrics are automated, and nothing independent has ever confirmed
+28 of the 29 metrics are automated, and nothing independent has ever confirmed
 that any of them agrees with a human. The dogfood answers file covers the
 *manual* metrics, deliberately — so it cannot double as ground truth for the
 automated ones. The README now states the confidence per axis rather than
-implying the whole score is measured (code 11/11, design 8/9, docs 8/8).
+implying the whole score is measured (code 12/12, design 8/9, docs 8/8).
 
 #36 is what looking rather than validating turns up: DE1, DE4 and DE5 were
 scoring Figma's own component-set chrome as raw values, answering No on
@@ -63,6 +63,30 @@ with no common ancestor means every mirror is a hand-merge, and a hand-merge
 into a repo that holds client data is exactly where that data leaks back out.
 
 Revisit only if something in the archive needs to run, rather than be kept.
+
+## Contrast in the Figma design (DE2)
+
+DE2 is the last manual norm in the default set, and #35 established that it
+stays that way. The contrast engines all audit rendered HTML in a browser;
+none can read a Figma node, so CO13 answers the code side and nothing answers
+the design side.
+
+A geometric inference off the REST API is *technically* conceivable: `fills`,
+`children` and bounding boxes are all returned, so for each TEXT node you
+could find the nearest painted ancestor whose box contains it, in z-order, and
+compute a ratio. It would be wrong on gradients, image fills, opacity, blend
+modes, effects, a background inherited from a frame outside the component, and
+text over imagery — which is what "no *resolved* text-over-background pairing"
+in DE2's note means. The API gives the ingredients, not the answer.
+
+The design axis has been burned by exactly this once already: a check that
+read Figma keys that do not exist the way it assumed, wrong on every component
+it looked at (see the `metrics.ts` header). A geometric inference is a larger
+version of that risk, and a false Yes on contrast is the worst kind, because
+nobody goes looking for it.
+
+Revisit if Figma ever exposes resolved colours, or annotations, through the
+REST API. Not before.
 
 ## i18n key coverage, orphaned by CO11
 

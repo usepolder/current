@@ -190,6 +190,41 @@ export interface ExpansionProbe {
   spilling: string[];
 }
 
+/**
+ * One text element's contrast verdict, as the engine reported it.
+ *
+ * `resolved` is the field that matters. Contrast is one of very few
+ * accessibility claims with a real arithmetic answer — a computed ratio
+ * against a threshold — but only when the effective background can actually
+ * be determined. Text over an image, text whose foreground and background
+ * resolve to the same colour, text with a shadow: in each case the engine
+ * declines to commit rather than guessing, and a guess is the one thing this
+ * norm must not do, in either direction.
+ */
+export interface ContrastFinding {
+  /** Lowercase tag name, e.g. "button". */
+  tag: string;
+  /** The engine's DOM path, for finding the element again. */
+  path: string;
+  /** Whether the engine could determine the effective background at all. */
+  resolved: boolean;
+  /** Meets the AA ratio for its size and weight. Only meaningful if resolved. */
+  passes: boolean;
+  /** The engine's own message, which carries the ratio, size and weight. */
+  message: string;
+}
+
+/**
+ * What the contrast engine made of one preview.
+ *
+ * `null` is "we could not look" — the engine is not installed, or the page
+ * would not take it — which is an N/A. An empty `findings` array is
+ * different: the engine ran and the component renders no text.
+ */
+export interface ContrastProbe {
+  findings: ContrastFinding[];
+}
+
 /** What one preview URL yielded. */
 export interface LiveProbe {
   url: string;
@@ -216,6 +251,11 @@ export interface LiveProbe {
    * `null` when the page could not be stressed at all. Same contract again.
    */
   expansion: ExpansionProbe[] | null;
+  /**
+   * Text contrast as a WCAG engine measured it, or `null` when the engine
+   * could not be run. Same contract again.
+   */
+  contrast: ContrastProbe | null;
 }
 
 /**
@@ -759,10 +799,111 @@ export function checkTextExpansion(facts: LiveFacts): CheckResult {
   };
 }
 
+/**
+ * CO13 — text contrast meets WCAG AA in the rendered component.
+ *
+ * This norm was added rather than converted, and it is the one place in this
+ * rubric where that was the right move: contrast is the most common real
+ * accessibility defect in a design system, and until now no norm looked for
+ * it on the code side at all.
+ *
+ * **It is not DE2, and must never be described as answering DE2.** DE2 is a
+ * design norm, scored against the component's Figma node, asking whether the
+ * contrast in the DESIGN passes AA. Every engine in this family audits
+ * rendered HTML in a browser; none of them can read a Figma node. Pointing
+ * one at DE2 would not automate DE2, it would silently replace a design-axis
+ * measurement with a code-axis one — and the quadrant IS the product. X is
+ * code health, Y is design health, and Critical is the top-left: strong in
+ * Figma, weak in code. Answering DE2 from the implementation puts a
+ * measurement of X inside Y, and hides exactly the failure the quadrant
+ * exists to surface: a designer's variant using a raw grey that a developer
+ * already fixed with a token would score DE2 Yes with the design debt
+ * invisible. For a design system that is the common direction of drift, not
+ * an edge case. #29 settled the governing principle — a claim belongs on the
+ * side where the evidence lives — which is why DE11 was folded into CO12.
+ * Contrast evidence from a browser lives on the code side, so it gets a code
+ * norm, and DE2 stays manual.
+ *
+ * Scoped to contrast and nothing else, which is the real trap here. An
+ * unscoped run of a WCAG engine returns a full audit, and this rubric already
+ * has norms for most of what comes back: CO2 owns ARIA attributes, CO3 owns
+ * keyboard reachability and focus, CO5 owns text alternatives, CO4 owns what
+ * reaches the AT. Scoring everything the engine reports would re-answer four
+ * existing norms from a second source — the DE11/CO12 duplication again, four
+ * times over — and would quietly reweight the A11y subcategory against
+ * everything else, which the README explicitly forbids as a way to make
+ * something matter more. The engine's other output is diagnostics for a
+ * human, not score input.
+ *
+ * Text only, and the title says so. The engine has no WCAG 1.4.11 rule, so
+ * non-text contrast — an icon against its background, a focus ring against
+ * the surface it sits on — is not covered by anything here. Naming this norm
+ * for icons as well would be claiming a measurement that does not exist.
+ */
+export function checkContrast(facts: LiveFacts): CheckResult {
+  if (facts.probe === null) return { ...noProbe(facts), needsHuman: true };
+  const { contrast } = facts.probe;
+
+  if (contrast === null) {
+    return {
+      answer: 'N/A',
+      evidence:
+        'no contrast engine is installed — run `npm i -D accessibility-checker-engine` to score it',
+      needsHuman: true,
+    };
+  }
+
+  const { findings } = contrast;
+  if (findings.length === 0) {
+    // Settled: a component with no text cannot have a text-contrast defect.
+    return {
+      answer: 'N/A',
+      evidence: 'preview renders no text, so there is no text contrast to measure',
+    };
+  }
+
+  const failing = findings.filter((f) => f.resolved && !f.passes);
+  if (failing.length > 0) {
+    return {
+      answer: 'No',
+      evidence:
+        `${failing.length} of ${findings.length} text element(s) fail the WCAG AA contrast ` +
+        `ratio: ${failing.slice(0, EVIDENCE_LIMIT).map(describeContrast).join('; ')}`,
+    };
+  }
+
+  // Some text passed and some could not be measured, so "all text meets AA"
+  // is not established. Partial looks are reported as partial here as
+  // everywhere else: `checkAriaAttributes` does the same on spread props.
+  const unresolved = findings.filter((f) => !f.resolved);
+  if (unresolved.length > 0) {
+    const passed = findings.length - unresolved.length;
+    return {
+      answer: 'N/A',
+      evidence:
+        `${passed} of ${findings.length} text element(s) meet the WCAG AA contrast ratio, but ` +
+        `the effective background of ${unresolved.length} could not be determined: ` +
+        `${unresolved.slice(0, EVIDENCE_LIMIT).map(describeContrast).join('; ')}`,
+      needsHuman: true,
+    };
+  }
+
+  return {
+    answer: 'Yes',
+    evidence: `all ${findings.length} text element(s) meet the WCAG AA contrast ratio`,
+  };
+}
+
+/** `<button> Text contrast of 1.61 …` — the engine's own words, which carry the ratio. */
+function describeContrast(f: ContrastFinding): string {
+  return `<${f.tag}> ${f.message}`;
+}
+
 export const LIVE_CHECKS: Record<string, LiveCheck> = {
   'code.keyboard': checkKeyboardAccess,
   'code.breakpoints': checkBreakpoints,
   'code.states': checkStates,
   'code.screenreader': checkScreenReader,
   'code.text-expansion': checkTextExpansion,
+  'code.contrast': checkContrast,
 };

@@ -92,6 +92,7 @@ export {
   checkStates,
   checkScreenReader,
   checkTextExpansion,
+  checkContrast,
   requestedWidths,
   DEFAULT_BREAKPOINT_WIDTHS,
   PROBE_VIEWPORT_HEIGHT,
@@ -106,6 +107,8 @@ export {
   type ScreenReaderProbe,
   type ScreenReaderStop,
   type ExpansionProbe,
+  type ContrastProbe,
+  type ContrastFinding,
 } from './live-checks';
 export {
   isPreviewUrl,
@@ -116,6 +119,7 @@ export {
   ProberUnavailableError,
   PROBER_INSTALL_HINT,
   SCREEN_READER_INSTALL_HINT,
+  CONTRAST_INSTALL_HINT,
   TEXT_EXPANSION_RATIO,
   parseAnnouncement,
   toClassicScript,

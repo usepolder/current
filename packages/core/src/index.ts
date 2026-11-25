@@ -90,6 +90,7 @@ export {
   checkKeyboardAccess,
   checkBreakpoints,
   checkStates,
+  checkScreenReader,
   requestedWidths,
   DEFAULT_BREAKPOINT_WIDTHS,
   PROBE_VIEWPORT_HEIGHT,
@@ -101,6 +102,8 @@ export {
   type FocusStop,
   type ViewportProbe,
   type StateProbe,
+  type ScreenReaderProbe,
+  type ScreenReaderStop,
 } from './live-checks';
 export {
   isPreviewUrl,
@@ -110,9 +113,13 @@ export {
   DEFAULT_PREVIEW_CONCURRENCY,
   ProberUnavailableError,
   PROBER_INSTALL_HINT,
+  SCREEN_READER_INSTALL_HINT,
+  parseAnnouncement,
+  toClassicScript,
   type PageProber,
   type ProberOptions,
   type ProbedPage,
+  type ReaderReading,
 } from './live-source';
 export {
   isDocsUrl,

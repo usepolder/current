@@ -105,6 +105,60 @@ export interface StateProbe {
   formField: boolean;
 }
 
+/**
+ * What a screen reader announced for one interactive element.
+ *
+ * Collected by driving `@guidepup/virtual-screen-reader` over the rendered
+ * preview — a screen reader implemented in JavaScript against the
+ * accessibility tree, so it needs no OS, no AT install and no platform gate.
+ * The fields are deliberately the reader's own output rather than the DOM's:
+ * what a screen reader user gets is the announcement, not the markup that
+ * produced it.
+ */
+export interface ScreenReaderStop {
+  /** Lowercase tag name, e.g. "button". */
+  tag: string;
+  /** The `role` attribute, when the element sets one. For evidence. */
+  role: string | null;
+  /** What the reader announced, verbatim: `button, Save changes`. */
+  phrase: string;
+  /**
+   * The role the reader named, or null when it announced no role at all —
+   * which is what a focusable `<div>` with no role sounds like: its text and
+   * nothing else.
+   */
+  spokenRole: string | null;
+  /** The accessible name the reader announced; empty when it announced none. */
+  name: string;
+  /** The reader announced a state for it: `not checked`, `collapsed`. */
+  spokenState: boolean;
+  /**
+   * This element's role carries a state a reader is expected to announce
+   * (checkbox, radio, switch, tab, option, a button with a popup). A role
+   * with no state to announce — plain `button`, `link` — is false here, and
+   * silence about its state is correct rather than a finding.
+   */
+  expectsState: boolean;
+}
+
+/**
+ * What the virtual screen reader made of one preview.
+ *
+ * `null` on `LiveProbe.screenReader` is "we could not look" — the reader is
+ * not installed, or the page would not take it — which is an N/A. An empty
+ * `stops` array is different: the reader ran and found nothing interactive
+ * to announce.
+ */
+export interface ScreenReaderProbe {
+  /** One entry per interactive element the reader announced. */
+  stops: ScreenReaderStop[];
+  /**
+   * Interactive elements the reader never announced, described for evidence.
+   * Usually `aria-hidden` over something a pointer can still reach.
+   */
+  silent: string[];
+}
+
 /** What one preview URL yielded. */
 export interface LiveProbe {
   url: string;
@@ -121,6 +175,11 @@ export interface LiveProbe {
    * Null is "we could not look", which is an N/A, not a No.
    */
   states: StateProbe[] | null;
+  /**
+   * What a virtual screen reader announced, or `null` when it could not be
+   * run — same contract as `states`, and for the same reason.
+   */
+  screenReader: ScreenReaderProbe | null;
 }
 
 /**
@@ -399,8 +458,150 @@ export function checkStates(facts: LiveFacts): CheckResult {
   };
 }
 
+/**
+ * CO4 — the component is accessible by screen reader.
+ *
+ * This check can prove a component is NOT screen-reader accessible. It
+ * cannot prove it is. Both halves of that matter.
+ *
+ * The No cases are objective and are the component's own fault. An
+ * interactive element that reaches the accessibility tree with no accessible
+ * name is announced as a bare "button", which tells a screen reader user
+ * there is something here and nothing about what it does. An element with
+ * interaction wired to it but no role is announced as its text and nothing
+ * else — a focusable `<div>` sounds exactly like a paragraph. A control that
+ * declares a state the reader never announces is a toggle whose user cannot
+ * hear whether it is on. Each of those costs a real user something, and
+ * currently nothing in this tool looks for them on either axis.
+ *
+ * That third one is narrower than it first appears, and the narrowing is the
+ * point. It does NOT fire on a control that simply omits its state attribute:
+ * a `role="switch"` with no `aria-checked` is still announced
+ * `switch, Dark mode, not checked`, because the reader supplies the implicit
+ * default, so the state does reach the user. It fires where the author
+ * declared a state on a role that cannot carry one and the reader drops it
+ * silently — `<a href aria-pressed="true">` announces `link, More`,
+ * `<div role="button" aria-checked="true">` announces `button, Toggle`. The
+ * attribute is in the markup, the intent is obvious, and none of it is
+ * audible. See `STATE_ATTRIBUTES` for the measurements.
+ *
+ * The clean case is **N/A and never Yes**, for the same reason `checkStates`
+ * is: the metric asks whether a screen reader user can *use* the component,
+ * and a virtual reader walking a tree cannot establish that. Guidepup's own
+ * virtual reader says it is not a substitute for testing with real
+ * assistive technology. Announcing Yes off it would be this tool claiming a
+ * verdict it did not earn, which is the failure mode #1 and #3 were about.
+ * Real NVDA and VoiceOver are the only thing that can turn that N/A into a
+ * Yes; that is #33, a second driver behind this same check id, off by
+ * default because it needs a Windows or macOS runner.
+ *
+ * Verdict order follows what each failure costs. An unnamed control is the
+ * worst: the user cannot tell what it is. A missing role is next: the user
+ * does not know it is a control at all, though at least hears the text. A
+ * missing state is last: the user knows what the control is and can act on
+ * it, but not what it is currently set to.
+ */
+export function checkScreenReader(facts: LiveFacts): CheckResult {
+  // Like checkStates, every N/A here is "could not settle" rather than "does
+  // not apply", except the one for a preview with nothing interactive in it.
+  if (facts.probe === null) return { ...noProbe(facts), needsHuman: true };
+  const { interactiveCount, screenReader } = facts.probe;
+
+  if (interactiveCount === 0) {
+    return {
+      answer: 'N/A',
+      evidence: 'preview renders no interactive elements — nothing for a screen reader to operate',
+    };
+  }
+
+  if (screenReader === null) {
+    return {
+      answer: 'N/A',
+      evidence:
+        'no virtual screen reader is installed — run ' +
+        '`npm i -D @guidepup/virtual-screen-reader` to score it',
+      needsHuman: true,
+    };
+  }
+
+  const { stops, silent } = screenReader;
+
+  if (stops.length === 0) {
+    return {
+      answer: 'N/A',
+      evidence:
+        `the screen reader announced none of the ${interactiveCount} interactive element(s), ` +
+        'so nothing could be measured',
+      needsHuman: true,
+    };
+  }
+
+  const unnamed = stops.filter((s) => s.name === '');
+  if (unnamed.length > 0) {
+    return {
+      answer: 'No',
+      evidence:
+        `${unnamed.length} of ${stops.length} interactive element(s) reach the accessibility ` +
+        `tree with no accessible name: ${describeStops(unnamed)}`,
+    };
+  }
+
+  const unroled = stops.filter((s) => s.spokenRole === null);
+  if (unroled.length > 0) {
+    return {
+      answer: 'No',
+      evidence:
+        `${unroled.length} of ${stops.length} interactive element(s) are announced with no ` +
+        `role, so a screen reader user cannot tell they are controls: ${describeStops(unroled)}`,
+    };
+  }
+
+  const stateless = stops.filter((s) => s.expectsState && !s.spokenState);
+  if (stateless.length > 0) {
+    return {
+      answer: 'No',
+      evidence:
+        `${stateless.length} of ${stops.length} control(s) declare a state the screen reader ` +
+        `never announces, so a user cannot tell which way they are set — usually an aria-* ` +
+        `state on a role that does not carry one: ${describeStops(stateless)}`,
+    };
+  }
+
+  // aria-hidden over something a pointer can still reach. Reported, not
+  // scored: hiding a control from the AT is sometimes deliberate (a
+  // duplicate of one already announced), and this check cannot tell which.
+  const hidden =
+    silent.length > 0
+      ? `; ${silent.length} interactive element(s) were never announced (${silent
+          .slice(0, EVIDENCE_LIMIT)
+          .join(', ')}) — check whether that is deliberate`
+      : '';
+
+  return {
+    answer: 'N/A',
+    evidence:
+      `all ${stops.length} interactive element(s) announce a role and a name` +
+      `${hidden} — whether a screen reader user can actually complete the task is a ` +
+      "human's call, or #33's real NVDA/VoiceOver run",
+    needsHuman: true,
+  };
+}
+
+/** `<button> "Save"` for each, capped. Phrase-aware: names what was heard. */
+function describeStops(stops: readonly ScreenReaderStop[]): string {
+  return stops
+    .slice(0, EVIDENCE_LIMIT)
+    .map((s) => {
+      const role = s.role === null ? '' : `[role=${s.role}]`;
+      const heard = s.phrase === '' ? 'nothing announced' : `announced "${s.phrase}"`;
+      return `<${s.tag}${role}> ${heard}`;
+    })
+    .join(', ');
+}
+
 export const LIVE_CHECKS: Record<string, LiveCheck> = {
   'code.keyboard': checkKeyboardAccess,
   'code.breakpoints': checkBreakpoints,
   'code.states': checkStates,
+  'code.screenreader': checkScreenReader,
 };

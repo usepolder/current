@@ -3,9 +3,11 @@ import { scanRepo, parseConfig } from '@usepolder/current-core';
 import {
   BrowserSetupError,
   PLAYWRIGHT_CORE_VERSION,
+  CONTRAST_ENGINE_VERSION,
   VIRTUAL_SCREEN_READER_VERSION,
   createActionBrowsers,
   createBrowserLoader,
+  createContrastEngineLoader,
   createScreenReaderLoader,
   type RuntimeDeps,
 } from '../src/docs-runtime';
@@ -168,5 +170,39 @@ describe('createScreenReaderLoader', () => {
       },
     });
     expect(await createScreenReaderLoader(d)()).toBeNull();
+  });
+});
+
+describe('createContrastEngineLoader', () => {
+  it('installs the pinned engine once and returns its bundle', async () => {
+    const { d, calls } = deps();
+    const load = createContrastEngineLoader(d);
+    expect(await load()).toBe(READER_BUNDLE);
+    expect(await load()).toBe(READER_BUNDLE);
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toContain(`accessibility-checker-engine@${CONTRAST_ENGINE_VERSION}`);
+    expect(calls[0][1]).toContain('--ignore-scripts');
+  });
+
+  // The engine, not the `accessibility-checker` wrapper, which would drag in
+  // puppeteer, chromedriver and a telemetry package to drive a browser this
+  // Action already has.
+  it('installs the engine alone, not the browser-driving wrapper', async () => {
+    const { d, calls } = deps();
+    await createContrastEngineLoader(d)();
+    expect(calls[0][1].join(' ')).not.toContain('puppeteer');
+    expect(calls[0][1].some((a) => a === 'accessibility-checker')).toBe(false);
+  });
+
+  it('returns null rather than throwing when the install fails', async () => {
+    const warnings: string[] = [];
+    const { d } = deps({
+      run: async () => {
+        throw new Error('registry unreachable');
+      },
+      warn: (m) => warnings.push(m),
+    });
+    expect(await createContrastEngineLoader(d)()).toBeNull();
+    expect(warnings.join(' ')).toContain('N/A');
   });
 });

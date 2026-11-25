@@ -1,8 +1,15 @@
 /**
- * The 28 default metrics, transcribed from a production design system's "Component Health"
- * audit sheet (Template tab). Teams can disable any of them or flip an
+ * The 29 default metrics, transcribed from a production design system's "Component Health"
+ * audit sheet (Template tab), less four that were dropped and plus one that
+ * was added. Teams can disable any of them or flip an
  * automated one to manual in `.polder.yml`; this is a starting point, not a
  * fixed rubric.
+ *
+ * CO13 is not from the sheet. It was added because text contrast is the most
+ * common real accessibility defect in a design system and no norm here
+ * measured it on either axis — DE2 asks about the design, which no API
+ * answers. See `checkContrast` for why it is a code norm and why it does not
+ * close DE2.
  *
  * Four of the sheet's norms are not here, and this comment block is the
  * record of why. Ids are never renumbered — DE9 stays DE9 — so existing
@@ -199,6 +206,35 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     // Figma side and was dropped: one claim, one norm, and this is the side
     // where the evidence lives.
     check: 'code.figma-connect',
+  },
+  {
+    // CO13 is an ADDITION, not a conversion. CO11 and DO1 were retired and
+    // their ids are gone for good, so this is 13 rather than a reuse.
+    //
+    // Contrast is the most common real accessibility defect in a design
+    // system and until now no norm in this rubric looked for it on either
+    // axis as a measurement — DE2 asks about the design and no API answers
+    // it. It is also one of very few accessibility claims with a genuine Yes
+    // available: a computed ratio against a threshold is arithmetic, not
+    // judgment.
+    //
+    // This does NOT answer DE2 and must never be described as doing so. DE2
+    // is scored against the Figma node and asks about the design; every
+    // engine in this family audits rendered HTML. Answering DE2 from the
+    // implementation would put a code-axis measurement on the design axis and
+    // hide the exact drift the quadrant exists to surface. See
+    // `checkContrast` for the whole argument. DE2 stays manual.
+    //
+    // Text only. The engine has no WCAG 1.4.11 rule, so non-text contrast —
+    // an icon against its background, a focus ring against its surface — is
+    // measured by nothing here, and the guideline says text so that the norm
+    // does not claim it.
+    id: 'CO13',
+    category: 'code',
+    subcategory: 'A11y',
+    guideline: 'Text contrast meets WCAG AA in the rendered component',
+    note: 'Answered from a WCAG contrast engine against the rendered preview',
+    check: 'code.contrast',
   },
 
   // ---- Design (Figma) ----

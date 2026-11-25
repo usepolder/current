@@ -4,6 +4,8 @@ import {
   PROBE_VIEWPORT_HEIGHT,
   type LiveProbe,
   type ScreenReaderProbe,
+  type ContrastFinding,
+  type ContrastProbe,
   type ExpansionProbe,
   type ScreenReaderStop,
   type StateProbe,
@@ -34,6 +36,12 @@ export interface ProberOptions {
   maxStateTargets?: number;
   /** Virtual-cursor moves before giving up on the screen-reader walk. */
   maxReaderStops?: number;
+  /**
+   * Source of the WCAG engine's browser bundle, resolved lazily so
+   * `accessibility-checker-engine` stays optional. Null is "not installed",
+   * which `checkContrast` reports as a clean N/A.
+   */
+  loadContrastEngine?: () => Promise<string | null>;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -214,6 +222,122 @@ const OVERFLOW_SCRIPT = `
     clientWidth: limit,
     overflowing: [...new Set(overflowing)],
   };
+})()
+`;
+
+/**
+ * The engine's rule id for WCAG 1.4.3, contrast minimum.
+ *
+ * One rule, by name, out of the ~200 the engine runs. An unscoped audit
+ * returns findings this rubric already has norms for — CO2 owns ARIA
+ * attributes, CO3 keyboard and focus, CO5 text alternatives, CO4 what reaches
+ * the AT — and scoring those from a second source would re-answer four norms
+ * at once. Everything that is not this rule is discarded.
+ */
+const CONTRAST_RULE_ID = 'text_contrast_sufficient';
+
+/**
+ * Reason codes where the engine declines to say whether contrast passes.
+ *
+ * Text over an image or gradient, text whose foreground and background
+ * resolve to the same colour, text with a shadow. In each case the effective
+ * background is not determinable and the engine says so rather than guessing,
+ * which is the behaviour that makes it worth using: a guess here would be
+ * wrong in one direction or the other, and a false Yes on contrast is the
+ * worse one because nobody goes looking for it.
+ *
+ * Matched as a prefix, because the engine's `potential_` codes are its own
+ * naming convention for exactly this class and new ones should land in the
+ * unresolved bucket rather than silently read as a pass.
+ */
+const CONTRAST_UNRESOLVED_PREFIX = 'potential_';
+
+/** The engine's reason code for text that meets the AA ratio. */
+const CONTRAST_PASS_CODE = 'pass';
+
+/** The ruleset the engine is run with. Its results are then filtered to one rule. */
+const CONTRAST_RULESET = 'IBM_Accessibility';
+
+export const CONTRAST_INSTALL_HINT =
+  'Contrast scoring needs a WCAG engine. Install it once with ' +
+  '`npm i -D accessibility-checker-engine`. Components with no `preview:` need nothing.';
+
+/**
+ * Run the contrast engine against an open page and keep only the contrast
+ * findings.
+ *
+ * The engine is injected and evaluated in the page, which is what it is built
+ * for — "the rules and engine are written in JavaScript and can be injected
+ * directly into web pages". Unlike the screen reader's bundle this one is
+ * already a classic script that assigns `window.ace`, so it needs no export
+ * rewriting; it still goes in through `page.evaluate` rather than a script
+ * tag, so a page with a strict `script-src` takes it.
+ *
+ * The published `accessibility-checker` package was the obvious thing to
+ * reach for and is the wrong artifact: it depends on puppeteer, chromedriver
+ * and a telemetry package, so it drives its own browser. That is the same
+ * objection that ruled out Pa11y — this repo already has a probe and a lazily
+ * resolved Playwright, and two browser-driving layers is one too many — plus
+ * telemetry has no business in an audit someone runs in their own CI.
+ * `accessibility-checker-engine` is the engine on its own: Apache-2.0, the
+ * same licence as this project, and no dependencies at all.
+ */
+async function probeContrast(
+  page: PlaywrightPage,
+  loadEngine: () => Promise<string | null>,
+  logger: Logger,
+): Promise<ContrastProbe | null> {
+  let engine: string | null;
+  try {
+    engine = await loadEngine();
+  } catch {
+    engine = null;
+  }
+  if (engine === null) {
+    logger.trace('preview: no contrast engine installed — CO13 not probed');
+    return null;
+  }
+
+  try {
+    await page.evaluate(engine);
+    const findings = (await page.evaluate(
+      CONTRAST_SCRIPT(CONTRAST_RULE_ID, CONTRAST_RULESET, CONTRAST_PASS_CODE, CONTRAST_UNRESOLVED_PREFIX),
+    )) as ContrastFinding[] | null;
+    if (findings === null) return null;
+    return { findings };
+  } catch (err) {
+    logger.trace(`preview: contrast not probed — ${(err as Error).message}`);
+    return null;
+  }
+}
+
+const CONTRAST_SCRIPT = (
+  ruleId: string,
+  ruleset: string,
+  passCode: string,
+  unresolvedPrefix: string,
+): string => `
+(async () => {
+  if (!window.ace || typeof window.ace.Checker !== 'function') return null;
+  const report = await new window.ace.Checker().check(document, [${JSON.stringify(ruleset)}]);
+  const results = (report && report.results) || [];
+  return results
+    .filter((r) => r.ruleId === ${JSON.stringify(ruleId)})
+    .map((r) => {
+      const reason = String(r.reasonId || '');
+      const path = (r.path && r.path.dom) || '';
+      // The engine reports a DOM path, not a node. The last step of the path
+      // names the element, which is all the evidence needs — and it avoids
+      // resolving a path back to a node only to read its tag name off it.
+      const step = path.split('/').filter((x) => x !== '').pop() || '';
+      return {
+        tag: step.replace(/\\[\\d+\\]$/, '').toLowerCase(),
+        path: path,
+        resolved: reason.indexOf(${JSON.stringify(unresolvedPrefix)}) !== 0,
+        passes: reason === ${JSON.stringify(passCode)},
+        message: String(r.message || '').replace(/\\s+/g, ' ').trim(),
+      };
+    });
 })()
 `;
 
@@ -1016,6 +1140,18 @@ export function createPlaywrightProber(opts: ProberOptions = {}): PageProber {
         return null;
       }
     });
+  // Same story: a browser bundle, read off disk, never required into Node.
+  const loadContrastEngine =
+    opts.loadContrastEngine ??
+    (async () => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const fs = require('node:fs') as { readFileSync(p: string, enc: string): string };
+        return fs.readFileSync(require.resolve('accessibility-checker-engine/ace.js'), 'utf8');
+      } catch {
+        return null;
+      }
+    });
 
   let browserPromise: Promise<PlaywrightBrowser> | null = null;
 
@@ -1051,6 +1187,7 @@ export function createPlaywrightProber(opts: ProberOptions = {}): PageProber {
     let unreachable: string[] = [];
     let states: LiveProbe['states'] = null;
     let screenReader: LiveProbe['screenReader'] = null;
+    let contrast: LiveProbe['contrast'] = null;
     const expansion: ExpansionProbe[] = [];
     let expansionFailed = false;
 
@@ -1102,6 +1239,11 @@ export function createPlaywrightProber(opts: ProberOptions = {}): PageProber {
             interactiveCount === 0
               ? { stops: [], silent: [] }
               : await probeScreenReader(page, loadScreenReader, maxReaderStops, logger);
+          // Contrast is a property of the resting page, so it goes before the
+          // text is touched and after the pointer states are released. At one
+          // width only: the engine's bundle is two thirds of a megabyte and a
+          // contrast ratio does not depend on the viewport.
+          contrast = await probeContrast(page, loadContrastEngine, logger);
         }
 
         // Dead last at every width, because it rewrites the page's text.
@@ -1124,6 +1266,7 @@ export function createPlaywrightProber(opts: ProberOptions = {}): PageProber {
       viewports,
       states,
       screenReader,
+      contrast,
       // One width failing to stress is not a partial answer: the norm asks
       // whether the bounds hold, and an unmeasured width could be the one
       // that breaks. All or nothing, same as `states`.

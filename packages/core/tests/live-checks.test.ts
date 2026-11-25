@@ -9,9 +9,12 @@ import {
   type FocusStop,
   type LiveFacts,
   type LiveProbe,
+  CONTRAST_INSTALL_HINT,
   TEXT_EXPANSION_RATIO,
   parseAnnouncement,
   toClassicScript,
+  type ContrastFinding,
+  type ContrastProbe,
   type ExpansionProbe,
   type PageProber,
   type ReaderReading,
@@ -26,6 +29,7 @@ const breakpoints = LIVE_CHECKS['code.breakpoints'];
 const states = LIVE_CHECKS['code.states'];
 const screenreader = LIVE_CHECKS['code.screenreader'];
 const expansion = LIVE_CHECKS['code.text-expansion'];
+const contrast = LIVE_CHECKS['code.contrast'];
 
 function stop(overrides: Partial<FocusStop> = {}): FocusStop {
   return { tag: 'button', role: null, name: 'Save', focusVisible: true, native: true, ...overrides };
@@ -74,6 +78,22 @@ function reader(overrides: Partial<ScreenReaderProbe> = {}): ScreenReaderProbe {
   return { stops: [heard()], silent: [], ...overrides };
 }
 
+/** Text that meets AA. */
+function measured(overrides: Partial<ContrastFinding> = {}): ContrastFinding {
+  return {
+    tag: 'p',
+    path: '/html[1]/body[1]/p[1]',
+    resolved: true,
+    passes: true,
+    message: 'The contrast ratio of text with its background meets WCAG AA requirements',
+    ...overrides,
+  };
+}
+
+function contrastProbe(overrides: Partial<ContrastProbe> = {}): ContrastProbe {
+  return { findings: [measured()], ...overrides };
+}
+
 /** One width that held under expansion. */
 function stressed(width: number, overrides: Partial<ExpansionProbe> = {}): ExpansionProbe {
   return {
@@ -98,6 +118,7 @@ function probe(overrides: Partial<LiveProbe> = {}): LiveProbe {
     states: [state()],
     screenReader: reader(),
     expansion: DEFAULT_BREAKPOINT_WIDTHS.map((w) => stressed(w)),
+    contrast: contrastProbe(),
     ...overrides,
   };
 }
@@ -861,5 +882,106 @@ describe('code.text-expansion (CO10)', () => {
 
   it('expands by the English-to-German figure, not an invented one', () => {
     expect(TEXT_EXPANSION_RATIO).toBeCloseTo(0.4);
+  });
+});
+
+describe('code.contrast (CO13)', () => {
+  // Contrast is one of very few accessibility claims with a real Yes: a
+  // computed ratio against a threshold is arithmetic, not judgment.
+  it('answers Yes when every text element meets AA', () => {
+    const r = contrast(facts());
+    expect(r.answer).toBe('Yes');
+    expect(r.evidence).toContain('meet the WCAG AA contrast ratio');
+  });
+
+  it('answers No when a text element fails the ratio, carrying the number', () => {
+    const r = contrast(
+      facts({
+        probe: probe({
+          contrast: contrastProbe({
+            findings: [
+              measured(),
+              measured({
+                tag: 'button',
+                passes: false,
+                message:
+                  'Text contrast of 1.61 with its background is less than the WCAG AA minimum ' +
+                  'requirements for text of size 14px and weight of 400',
+              }),
+            ],
+          }),
+        }),
+      }),
+    );
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('1 of 2 text element(s) fail');
+    expect(r.evidence).toContain('1.61');
+  });
+
+  // The engine declines to commit where the effective background is not
+  // determinable — text over an image, a shadow, the same colour both ways.
+  // "All text meets AA" is then not established, so neither is a Yes.
+  it('answers N/A when some backgrounds could not be determined', () => {
+    const r = contrast(
+      facts({
+        probe: probe({
+          contrast: contrastProbe({
+            findings: [
+              measured(),
+              measured({
+                resolved: false,
+                passes: false,
+                message: 'Verify the contrast ratio of the text with shadow meets the WCAG AA minimum',
+              }),
+            ],
+          }),
+        }),
+      }),
+    );
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('could not be determined');
+    expect(r.needsHuman).toBe(true);
+  });
+
+  // A real failure outranks an unmeasurable element: the No is a finding and
+  // the N/A is the absence of one.
+  it('reports a real failure ahead of an unmeasurable element', () => {
+    const r = contrast(
+      facts({
+        probe: probe({
+          contrast: contrastProbe({
+            findings: [
+              measured({ resolved: false, passes: false }),
+              measured({ passes: false, message: 'Text contrast of 1.92' }),
+            ],
+          }),
+        }),
+      }),
+    );
+    expect(r.answer).toBe('No');
+  });
+
+  it('answers a settled N/A when the preview renders no text', () => {
+    const r = contrast(facts({ probe: probe({ contrast: contrastProbe({ findings: [] }) }) }));
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('renders no text');
+    expect(r.needsHuman).toBeUndefined();
+  });
+
+  it('answers N/A with an install hint when no engine is installed', () => {
+    const r = contrast(facts({ probe: probe({ contrast: null }) }));
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('accessibility-checker-engine');
+    expect(r.needsHuman).toBe(true);
+  });
+
+  it('answers N/A with no preview URL, never No', () => {
+    const r = contrast(facts({ probe: null, absence: null }));
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('no preview URL');
+  });
+
+  it('names the engine in its install hint', () => {
+    expect(CONTRAST_INSTALL_HINT).toContain('accessibility-checker-engine');
   });
 });

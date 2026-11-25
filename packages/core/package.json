@@ -43,7 +43,8 @@
   },
   "optionalDependencies": {
     "playwright": "^1.47.0",
-    "@guidepup/virtual-screen-reader": "^0.33.0"
+    "@guidepup/virtual-screen-reader": "^0.33.0",
+    "accessibility-checker-engine": "^4.0.35"
   },
   "peerDependenciesMeta": {}
 }

@@ -19,6 +19,9 @@ import {
  */
 export const PLAYWRIGHT_CORE_VERSION = '1.63.0';
 
+/** Same rule as PLAYWRIGHT_CORE_VERSION: pinned, so what runs is what was reviewed. */
+export const VIRTUAL_SCREEN_READER_VERSION = '0.33.0';
+
 const execFileAsync = promisify(execFile);
 
 /** Everything that touches the machine, injectable so tests never install or launch anything. */
@@ -29,6 +32,8 @@ export interface RuntimeDeps {
   /** `require(id)` as resolved from `dir` — not from the bundle. */
   requireFrom: (dir: string, id: string) => unknown;
   exists: (file: string) => boolean;
+  /** Read a file as UTF-8. Only the screen reader's bundle, so far. */
+  readFile: (file: string) => string;
   warn: (message: string) => void;
 }
 
@@ -49,6 +54,7 @@ export function defaultDeps(warn: (message: string) => void): RuntimeDeps {
     // bundle lookup that cannot see a package installed after the build.
     requireFrom: (dir, id) => createRequire(path.join(dir, 'noop.js'))(id),
     exists: fs.existsSync,
+    readFile: (file) => fs.readFileSync(file, 'utf8'),
     warn,
   };
 }
@@ -124,6 +130,64 @@ export function createBrowserLoader(deps: RuntimeDeps): () => Promise<unknown> {
 }
 
 /**
+ * Get the virtual screen reader's browser bundle onto the runner and hand
+ * back its source.
+ *
+ * Returns null rather than throwing on every failure path, because
+ * `checkScreenReader` turns null into a clean N/A with an install hint and a
+ * missing screen reader must never read as an inaccessible component. That is
+ * the one way this differs from `createBrowserLoader`, which throws: a
+ * docs page that could not be rendered is reported as an error on the run,
+ * while CO4 has a verdict that already means "we could not look".
+ *
+ * The bundle is read off disk rather than required. It is an ES module built
+ * for a browser, so requiring it into Node would fail even here, where the
+ * package is installed — and it is only ever evaluated inside the page.
+ */
+export function createScreenReaderLoader(deps: RuntimeDeps): () => Promise<string | null> {
+  const bundlePath = (): string =>
+    path.join(
+      deps.dir,
+      'node_modules',
+      '@guidepup',
+      'virtual-screen-reader',
+      'lib',
+      'esm',
+      'index.browser.js',
+    );
+
+  return async () => {
+    if (!deps.exists(bundlePath())) {
+      deps.warn(
+        `Current: installing @guidepup/virtual-screen-reader@${VIRTUAL_SCREEN_READER_VERSION} to score CO4`,
+      );
+      try {
+        await deps.run('npm', [
+          'install',
+          '--prefix',
+          deps.dir,
+          `@guidepup/virtual-screen-reader@${VIRTUAL_SCREEN_READER_VERSION}`,
+          '--no-audit',
+          '--no-fund',
+          '--ignore-scripts',
+          '--loglevel=error',
+        ]);
+      } catch (err) {
+        deps.warn(
+          `Current: could not install the virtual screen reader (${(err as Error).message}) — CO4 reports N/A`,
+        );
+        return null;
+      }
+    }
+    try {
+      return deps.readFile(bundlePath());
+    } catch {
+      return null;
+    }
+  };
+}
+
+/**
  * Renderer and prober off ONE loader.
  *
  * A single loader instance matters: it is what makes the on-demand install
@@ -136,8 +200,9 @@ export function createActionBrowsers(
   deps: RuntimeDeps,
 ): { renderer: PageRenderer; prober: PageProber } {
   const load = createBrowserLoader(deps);
+  const loadScreenReader = createScreenReaderLoader(deps);
   return {
     renderer: createPlaywrightRenderer({ logger, load }),
-    prober: createPlaywrightProber({ logger, load }),
+    prober: createPlaywrightProber({ logger, load, loadScreenReader }),
   };
 }

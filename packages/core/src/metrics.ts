@@ -40,7 +40,9 @@
  * written down. What is automatable was settled by probing Figma's published
  * OpenAPI spec (figma/rest-api-spec): `AnnotationsTrait` is declared with an
  * empty property bag, so the REST API exposes no accessibility annotations —
- * DE2 and the screenreader checks stay manual. `layoutMode`,
+ * which is why DE2 stays manual. CO4 escaped that constraint by moving to the
+ * side where the evidence lives: a rendered page has an accessibility tree,
+ * and a virtual screen reader reads it. `layoutMode`,
  * `boundVariables`, `componentPropertyDefinitions`, `cornerRadius` and
  * `transitionNodeID` ARE returned, so the token/auto-layout/prototyping
  * checks are real.
@@ -118,8 +120,16 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     category: 'code',
     subcategory: 'A11y',
     guideline: 'Component is accessible by screenreader',
-    note: 'cmd + f5 to enable the screenreader',
-    check: null,
+    // The note used to read `cmd + f5 to enable the screenreader`, which is
+    // an instruction to a human rather than a check. A virtual screen reader
+    // reads the accessibility tree of the rendered preview, so the No cases
+    // — unnamed control, interaction with no role, a state the reader never
+    // announces — are now found by machine. The clean case stays N/A: a
+    // virtual AT cannot establish that a screen reader user can USE the
+    // component, which is what the guideline asks. Only real NVDA or
+    // VoiceOver can, and that is a second driver behind this same check id.
+    note: 'Answered from a virtual screen reader against the rendered preview',
+    check: 'code.screenreader',
   },
   {
     id: 'CO5',

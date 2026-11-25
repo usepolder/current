@@ -3,10 +3,15 @@ import { scanRepo, parseConfig } from '@usepolder/current-core';
 import {
   BrowserSetupError,
   PLAYWRIGHT_CORE_VERSION,
+  VIRTUAL_SCREEN_READER_VERSION,
   createActionBrowsers,
   createBrowserLoader,
+  createScreenReaderLoader,
   type RuntimeDeps,
 } from '../src/docs-runtime';
+
+/** Stands in for the screen reader's browser bundle. Content is irrelevant. */
+const READER_BUNDLE = 'const v=1;export{v as virtual};';
 
 function deps(over: Partial<RuntimeDeps> & { launches?: Array<Record<string, unknown>> } = {}) {
   const calls: Array<[string, string[]]> = [];
@@ -27,6 +32,7 @@ function deps(over: Partial<RuntimeDeps> & { launches?: Array<Record<string, unk
       },
     }),
     exists: () => installed,
+    readFile: () => READER_BUNDLE,
     warn: () => {},
     ...over,
   };
@@ -115,5 +121,52 @@ describe('hosted docs through the Action renderer', () => {
       expect(m.answer).toBe('N/A');
       expect(m.evidence).toContain('offline');
     }
+  });
+});
+
+describe('createScreenReaderLoader', () => {
+  it('installs the pinned virtual screen reader once and returns its bundle', async () => {
+    const { d, calls } = deps();
+    const load = createScreenReaderLoader(d);
+    expect(await load()).toBe(READER_BUNDLE);
+    expect(await load()).toBe(READER_BUNDLE);
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toBe('npm');
+    expect(calls[0][1]).toContain(
+      `@guidepup/virtual-screen-reader@${VIRTUAL_SCREEN_READER_VERSION}`,
+    );
+    expect(calls[0][1]).toContain('--ignore-scripts');
+  });
+
+  it('skips the install when the bundle is already there', async () => {
+    const { d, calls } = deps({ exists: () => true });
+    expect(await createScreenReaderLoader(d)()).toBe(READER_BUNDLE);
+    expect(calls).toHaveLength(0);
+  });
+
+  // The one place this differs from createBrowserLoader, which throws. CO4
+  // already has a verdict for "we could not look", and a screen reader that
+  // would not install must never read as an inaccessible component.
+  it('returns null rather than throwing when the install fails', async () => {
+    const warnings: string[] = [];
+    const { d } = deps({
+      run: async () => {
+        throw new Error('registry unreachable');
+      },
+      warn: (m) => warnings.push(m),
+    });
+    expect(await createScreenReaderLoader(d)()).toBeNull();
+    expect(warnings.join(' ')).toContain('registry unreachable');
+    expect(warnings.join(' ')).toContain('N/A');
+  });
+
+  it('returns null rather than throwing when the bundle cannot be read', async () => {
+    const { d } = deps({
+      exists: () => true,
+      readFile: () => {
+        throw new Error('EACCES');
+      },
+    });
+    expect(await createScreenReaderLoader(d)()).toBeNull();
   });
 });

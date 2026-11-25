@@ -9,7 +9,12 @@ import {
   type FocusStop,
   type LiveFacts,
   type LiveProbe,
+  parseAnnouncement,
+  toClassicScript,
   type PageProber,
+  type ReaderReading,
+  type ScreenReaderProbe,
+  type ScreenReaderStop,
   type StateProbe,
   type ViewportProbe,
 } from '@usepolder/current-core';
@@ -17,6 +22,7 @@ import {
 const keyboard = LIVE_CHECKS['code.keyboard'];
 const breakpoints = LIVE_CHECKS['code.breakpoints'];
 const states = LIVE_CHECKS['code.states'];
+const screenreader = LIVE_CHECKS['code.screenreader'];
 
 function stop(overrides: Partial<FocusStop> = {}): FocusStop {
   return { tag: 'button', role: null, name: 'Save', focusVisible: true, native: true, ...overrides };
@@ -47,6 +53,24 @@ function viewport(width: number, overrides: Partial<ViewportProbe> = {}): Viewpo
   };
 }
 
+/** A named, roled, stateless-by-nature control: the clean case. */
+function heard(overrides: Partial<ScreenReaderStop> = {}): ScreenReaderStop {
+  return {
+    tag: 'button',
+    role: null,
+    phrase: 'button, Save',
+    spokenRole: 'button',
+    name: 'Save',
+    spokenState: false,
+    expectsState: false,
+    ...overrides,
+  };
+}
+
+function reader(overrides: Partial<ScreenReaderProbe> = {}): ScreenReaderProbe {
+  return { stops: [heard()], silent: [], ...overrides };
+}
+
 function probe(overrides: Partial<LiveProbe> = {}): LiveProbe {
   return {
     url: 'http://localhost:6006/iframe.html?id=button--primary',
@@ -55,6 +79,7 @@ function probe(overrides: Partial<LiveProbe> = {}): LiveProbe {
     unreachable: [],
     viewports: DEFAULT_BREAKPOINT_WIDTHS.map((w) => viewport(w)),
     states: [state()],
+    screenReader: reader(),
     ...overrides,
   };
 }
@@ -397,5 +422,324 @@ describe('code.states (CO1)', () => {
     expect(r.evidence).toContain('9 of 9');
     expect(r.evidence).toContain('"B4"');
     expect(r.evidence).not.toContain('"B5"');
+  });
+});
+
+describe('code.screenreader (CO4)', () => {
+  // The headline claim: this check can prove a component is NOT
+  // screen-reader accessible, and cannot prove it is.
+  it('never answers Yes, even on a flawless read', () => {
+    const r = screenreader(
+      facts({
+        probe: probe({
+          interactiveCount: 3,
+          screenReader: reader({
+            stops: [
+              heard(),
+              heard({ tag: 'a', phrase: 'link, Docs', spokenRole: 'link', name: 'Docs' }),
+              heard({
+                tag: 'input',
+                phrase: 'checkbox, Subscribe, not checked',
+                spokenRole: 'checkbox',
+                name: 'Subscribe',
+                spokenState: true,
+                expectsState: true,
+              }),
+            ],
+          }),
+        }),
+      }),
+    );
+    expect(r.answer).toBe('N/A');
+    expect(r.needsHuman).toBe(true);
+    expect(r.evidence).toContain('announce a role and a name');
+  });
+
+  it('answers No for an interactive element with no accessible name', () => {
+    const r = screenreader(
+      facts({
+        probe: probe({
+          interactiveCount: 2,
+          screenReader: reader({
+            stops: [heard(), heard({ phrase: 'button', name: '' })],
+          }),
+        }),
+      }),
+    );
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('no accessible name');
+    expect(r.evidence).toContain('announced "button"');
+  });
+
+  // A focusable div sounds exactly like a paragraph.
+  it('answers No for interaction wired to an element with no role', () => {
+    const r = screenreader(
+      facts({
+        probe: probe({
+          screenReader: reader({
+            stops: [
+              heard({ tag: 'div', phrase: 'Click me', spokenRole: null, name: 'Click me' }),
+            ],
+          }),
+        }),
+      }),
+    );
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('announced with no role');
+  });
+
+  // The real shape of this failure, measured against the reader: an author
+  // declares a state on a role that cannot carry one, and the reader drops it
+  // silently. `<a href aria-pressed="true">` announces `link, More` — a
+  // toggle whose user cannot hear whether it is on.
+  it('answers No when a declared state never reaches the reader', () => {
+    const r = screenreader(
+      facts({
+        probe: probe({
+          screenReader: reader({
+            stops: [
+              heard({
+                tag: 'a',
+                phrase: 'link, More',
+                spokenRole: 'link',
+                name: 'More',
+                spokenState: false,
+                expectsState: true,
+              }),
+            ],
+          }),
+        }),
+      }),
+    );
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('declare a state the screen reader never announces');
+  });
+
+  // A plain button has no state, so silence about its state is correct.
+  it('does not charge a stateless role for announcing no state', () => {
+    expect(screenreader(facts()).answer).toBe('N/A');
+  });
+
+  // Verdict order: an unnamed control costs more than a missing state.
+  it('reports the unnamed control ahead of the missing state', () => {
+    const r = screenreader(
+      facts({
+        probe: probe({
+          interactiveCount: 2,
+          screenReader: reader({
+            stops: [
+              heard({ phrase: 'button', name: '' }),
+              heard({
+                tag: 'a',
+                phrase: 'link, More',
+                spokenRole: 'link',
+                name: 'More',
+                expectsState: true,
+              }),
+            ],
+          }),
+        }),
+      }),
+    );
+    expect(r.evidence).toContain('no accessible name');
+  });
+
+  it('answers N/A with an install hint when no reader is installed', () => {
+    const r = screenreader(facts({ probe: probe({ screenReader: null }) }));
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('@guidepup/virtual-screen-reader');
+    expect(r.needsHuman).toBe(true);
+  });
+
+  it('answers N/A with no preview URL, never No', () => {
+    const r = screenreader(facts({ probe: null, absence: null }));
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('no preview URL');
+    expect(r.needsHuman).toBe(true);
+  });
+
+  it('answers a settled N/A when the preview renders nothing interactive', () => {
+    const r = screenreader(
+      facts({ probe: probe({ interactiveCount: 0, screenReader: reader({ stops: [] }) }) }),
+    );
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('nothing for a screen reader to operate');
+    // Settled, so unlike the others this one does not go on the human's list.
+    expect(r.needsHuman).toBeUndefined();
+  });
+
+  it('answers N/A when the reader ran but announced none of the controls', () => {
+    const r = screenreader(
+      facts({ probe: probe({ interactiveCount: 2, screenReader: reader({ stops: [] }) }) }),
+    );
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('announced none');
+    expect(r.needsHuman).toBe(true);
+  });
+
+  // aria-hidden over a reachable control is reported, not scored: hiding a
+  // duplicate from the AT is sometimes right, and this check cannot tell.
+  it('reports elements the reader never announced without scoring them', () => {
+    const r = screenreader(
+      facts({
+        probe: probe({
+          interactiveCount: 2,
+          screenReader: reader({ silent: ['<div[role=button]> "Close"'] }),
+        }),
+      }),
+    );
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('never announced');
+    expect(r.evidence).toContain('Close');
+  });
+});
+
+describe('toClassicScript', () => {
+  // The bundle is ESM and `virtual` is an export NAME, not a binding, so
+  // appending `window.x = virtual` to it is a ReferenceError. The export
+  // statement has to become an assignment.
+  it('rewrites the trailing ESM export into a window assignment', () => {
+    const out = toClassicScript('const a=1,b=2;export{a as Virtual,b as virtual};', '__x');
+    expect(out).toBe('const a=1,b=2;window["__x"]={"Virtual":a,"virtual":b};');
+  });
+
+  it('keeps an export with no alias under its own name', () => {
+    expect(toClassicScript('const virtual=1;export{virtual};', '__x')).toBe(
+      'const virtual=1;window["__x"]={"virtual":virtual};',
+    );
+  });
+
+  // A future bundle that emits something else must degrade to "we could not
+  // look", never to a wrong answer.
+  it('returns null when there is no export statement to rewrite', () => {
+    expect(toClassicScript('const a = 1;', '__x')).toBeNull();
+  });
+});
+
+/**
+ * Every phrase here came out of `@guidepup/virtual-screen-reader` driven
+ * against a real page in a real browser, not from a specification. Two of the
+ * rules below were wrong in an earlier draft and were corrected against these
+ * strings, so they are the regression tests for both mistakes.
+ */
+describe('parseAnnouncement', () => {
+  function reading(over: Partial<ReaderReading> = {}): ReaderReading {
+    return {
+      tag: 'button',
+      role: null,
+      phrase: 'button, Save changes',
+      itemText: 'Save changes',
+      declaresState: false,
+      ...over,
+    };
+  }
+
+  it('splits a plain announcement into role and name', () => {
+    const s = parseAnnouncement(reading());
+    expect(s.spokenRole).toBe('button');
+    expect(s.name).toBe('Save changes');
+    expect(s.spokenState).toBe(false);
+  });
+
+  it('reports an empty name when the reader announced only a role', () => {
+    const s = parseAnnouncement(reading({ phrase: 'button', itemText: '' }));
+    expect(s.spokenRole).toBe('button');
+    expect(s.name).toBe('');
+  });
+
+  // The first mistake. Testing segment 0 against a list of ARIA role names
+  // read the NAME as the role on every control labelled with a role word,
+  // so a perfectly good button reported as roled-but-unnamed.
+  it.each(['Menu', 'Search', 'Link', 'Table', 'Note', 'Status', 'Dialog'])(
+    'keeps the name of a button labelled "%s" out of the role',
+    (label) => {
+      const s = parseAnnouncement(
+        reading({ phrase: `button, ${label}`, itemText: label }),
+      );
+      expect(s.spokenRole).toBe('button');
+      expect(s.name).toBe(label);
+    },
+  );
+
+  // The other half of the same mistake: a focusable div announces as nothing
+  // but its text, and reading that text as a role hid the real finding.
+  it('reports no role when the phrase is nothing but the name', () => {
+    const s = parseAnnouncement(
+      reading({ tag: 'div', phrase: 'Click me', itemText: 'Click me' }),
+    );
+    expect(s.spokenRole).toBeNull();
+    expect(s.name).toBe('Click me');
+  });
+
+  it('reports no role for a focusable div whose text is a role word', () => {
+    const s = parseAnnouncement(reading({ tag: 'div', phrase: 'Menu', itemText: 'Menu' }));
+    expect(s.spokenRole).toBeNull();
+    expect(s.name).toBe('Menu');
+  });
+
+  it('counts a state the reader announced', () => {
+    const s = parseAnnouncement(
+      reading({ phrase: 'button, Menu, not expanded', itemText: 'Menu', declaresState: true }),
+    );
+    expect(s.spokenState).toBe(true);
+    expect(s.expectsState).toBe(true);
+  });
+
+  // The second mistake: a hand-written list of state words had "collapsed"
+  // but not "not expanded", which is what the reader actually says — so a
+  // correctly built disclosure button reported its state as missing.
+  it.each([
+    ['button, Menu, not expanded', 'Menu'],
+    ['button, Bold, pressed', 'Bold'],
+    ['button, Bold, not pressed', 'Bold'],
+    ['checkbox, Subscribe, not checked', 'Subscribe'],
+    ['switch, Dark mode, checked', 'Dark mode'],
+    ['tab, Overview, not selected, position 1, set size 1', 'Overview'],
+    ['radio, One, not checked, position 1, set size 1', 'One'],
+  ])('hears the state in %j', (phrase, itemText) => {
+    expect(parseAnnouncement(reading({ phrase, itemText })).spokenState).toBe(true);
+  });
+
+  // Position and relationship information is not a state. Counting it as one
+  // would make every list item and heading look like it announced a state.
+  it.each([
+    ['heading, Title, level 2', 'Title'],
+    ['listitem, level 1, position 1, set size 1', ''],
+    ['link, More', 'More'],
+    ['button, Toggle', 'Toggle'],
+    ['image, Logo', 'Logo'],
+  ])('hears no state in %j', (phrase, itemText) => {
+    expect(parseAnnouncement(reading({ phrase, itemText })).spokenState).toBe(false);
+  });
+
+  // `has popup listbox` is structure, but `not expanded` beside it is a
+  // state — so the structure filter must not swallow the whole tail.
+  it('hears the state past a structural segment', () => {
+    const s = parseAnnouncement(
+      reading({ phrase: 'combobox, has popup listbox, not expanded', itemText: '' }),
+    );
+    expect(s.spokenRole).toBe('combobox');
+    expect(s.name).toBe('');
+    expect(s.spokenState).toBe(true);
+  });
+
+  // expectsState comes from the element's attributes, never from its role.
+  // A `role="switch"` with no aria-checked is still announced "not checked" —
+  // the reader supplies the implicit default — so keying off the role would
+  // have found nothing while looking plausible.
+  it('takes expectsState from the declared attribute, not the role', () => {
+    expect(
+      parseAnnouncement(
+        reading({ role: 'switch', phrase: 'switch, Dark mode, not checked', itemText: 'Dark mode' }),
+      ).expectsState,
+    ).toBe(false);
+    expect(parseAnnouncement(reading({ declaresState: true })).expectsState).toBe(true);
+  });
+
+  it('survives an empty announcement', () => {
+    const s = parseAnnouncement(reading({ phrase: '', itemText: '' }));
+    expect(s.spokenRole).toBeNull();
+    expect(s.name).toBe('');
+    expect(s.spokenState).toBe(false);
   });
 });

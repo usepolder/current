@@ -9,11 +9,22 @@ import type { FigmaNode } from '@usepolder/current-core';
  * Property keys carry the `#1:2` suffix a real file puts on them. It is
  * observed everywhere and documented nowhere, so every reader strips it when
  * present; the fixture keeps it so that stays exercised.
+ *
+ * The set wrapper carries the chrome Figma puts on every component set — the
+ * `#9747FF` stroke, raw `itemSpacing` between the variants, its own corner
+ * radius. None of it ships, and the token checks must not count it: measuring
+ * it used to answer `No` on DE1, DE4 and DE5 here, on a component whose every
+ * real layer binds a token. Kept on the fixture so the whole scan exercises
+ * the shape a real file has, not just the unit tests.
  */
 export const buttonNode: FigmaNode = {
   id: '1:10',
   name: 'Button',
   type: 'COMPONENT_SET',
+  layoutMode: 'HORIZONTAL',
+  itemSpacing: 24,
+  cornerRadius: 5,
+  strokes: [{ type: 'SOLID', color: { r: 0.592, g: 0.278, b: 1 } }],
   componentPropertyDefinitions: {
     'Size#1:2': { type: 'VARIANT', defaultValue: 'large', variantOptions: ['large', 'small'] },
     'State#2:3': {

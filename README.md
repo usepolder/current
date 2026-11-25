@@ -396,6 +396,7 @@ Things worth knowing:
   ```
 
   The evidence names the ratio either way, so `11 of 151 layer(s) use raw radius tokens` is visible whichever side of the threshold it falls. A threshold is rejected outside 1-100: at 0 a component binding nothing would answer Yes.
+- **The token checks measure the layers that ship, not Figma's own chrome.** Figma strokes a component set's wrapper in `#9747FF`, spaces its variants out with raw `itemSpacing`, and gives it a corner radius; it paints a `SECTION` the same purple. None of that was designed and none of it renders anywhere a user can see, so `COMPONENT_SET`, `SECTION` and `SLICE` nodes are left out of what DE1, DE3, DE4 and DE5 count — the population is the variants inside and their layers. This matters more than it sounds at `min_bound: 100`, where one wrapper was enough to answer `No` on a component whose every real layer bound a token. If your layer counts are lower than they used to be, this is why.
 - **`design.interaction-states` asks for three states, not nine.** DE6's guideline lists nine; the check defaults to `hover, pressed, disabled`, the ones anything a pointer can act on has to have. Asking for all of them would report a `No` on nearly every component in a healthy system, because most components legitimately need only some — which is exactly why this norm used to be a human's. Name the set your system actually models:
 
   ```yaml

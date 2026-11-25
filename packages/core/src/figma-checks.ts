@@ -25,6 +25,51 @@ export function flatten(node: FigmaNode): FigmaNode[] {
   return out;
 }
 
+/**
+ * Node types that are Figma's own presentation chrome, never part of what a
+ * component ships.
+ *
+ * Figma paints a component set's wrapper with a `#9747FF` stroke, lays its
+ * variants out with raw `itemSpacing`, and gives it a corner radius. A
+ * `SECTION` gets the same purple by default. None of that was designed, none
+ * of it renders anywhere a user can see, and none of it appears in code or in
+ * a design that consumes the component. What ships is the variants inside.
+ *
+ * `SLICE` is here for a different reason: it is an export region, not a
+ * rendered layer, so it has no appearance to be tokenised in the first place.
+ *
+ * `checkAutoLayout` has always known this about component sets — "a component
+ * set delegates layout to its variants" — and the token checks simply never
+ * adopted it. Measuring the wrapper was especially costly there because
+ * `DEFAULT_MIN_BOUND` is 100: a single chrome node flipped a norm to No on a
+ * component whose every real layer bound a token.
+ *
+ * Exclusion is by node TYPE and never by paint value. A `#9747FF` blocklist
+ * would be shorter and is the wrong trade: the value is a changeable Figma
+ * default, not a constant, so blocking it would suppress a genuine raw colour
+ * inside a real layer. That is a false Yes, which is strictly worse than the
+ * false No it replaces, because nobody goes looking for it.
+ */
+export const UNSHIPPED_NODE_TYPES: readonly string[] = ['COMPONENT_SET', 'SECTION', 'SLICE'];
+
+/**
+ * Every node in the subtree that is part of what the component ships.
+ *
+ * Chrome nodes are skipped but still descended into, so a component inside a
+ * `SECTION` is measured while the section's own paint is not. For a component
+ * set that means the population is its `COMPONENT` children and their
+ * subtrees, with the set node itself left out.
+ *
+ * This is the denominator the token norms score against. It is deliberately
+ * not a threshold: a team hitting the wrapper bug will reach for
+ * `min_bound: 80` and it will appear to work, while forgiving real raw values
+ * at the same rate. The threshold sweep in #3 settled that the default stays
+ * at 100.
+ */
+export function flattenShipped(node: FigmaNode): FigmaNode[] {
+  return flatten(node).filter((n) => !UNSHIPPED_NODE_TYPES.includes(n.type));
+}
+
 function boundKeys(node: FigmaNode): string[] {
   return Object.keys(node.boundVariables ?? {});
 }
@@ -65,7 +110,7 @@ function tokenCheck(
     minBound: number;
   },
 ): CheckResult {
-  const nodes = flatten(node).filter(opts.applies);
+  const nodes = flattenShipped(node).filter(opts.applies);
   if (nodes.length === 0) {
     return { answer: 'N/A', evidence: `no layers in this component use ${opts.label}` };
   }

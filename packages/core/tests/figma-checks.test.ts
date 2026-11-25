@@ -247,6 +247,176 @@ describe('design token checks', () => {
   });
 });
 
+// Figma paints a component set's wrapper with a #9747FF stroke, spaces its
+// variants out with raw itemSpacing, and gives it a corner radius. None of it
+// ships. Measuring it flipped DE1, DE4 and DE5 to No on fully tokenised
+// components, because every relevant layer must bind at the default threshold
+// of 100 — so one node of chrome was enough to fail the whole norm.
+describe('design token checks ignore Figma chrome', () => {
+  /**
+   * A fully tokenised variant. Every appearance it has is bound: fill,
+   * spacing and radius.
+   */
+  function tokenisedVariant(id = '1:2'): FigmaNode {
+    return {
+      id,
+      name: 'State=Default',
+      type: 'COMPONENT',
+      layoutMode: 'HORIZONTAL',
+      itemSpacing: 8,
+      cornerRadius: 4,
+      fills: [{ type: 'SOLID' }],
+      boundVariables: {
+        fills: [{ id: 'V:colour' }],
+        itemSpacing: { id: 'V:space' },
+        cornerRadius: { id: 'V:radius' },
+      },
+    };
+  }
+
+  /** The wrapper Figma generates, carrying every piece of chrome at once. */
+  function chromeWrapper(children: FigmaNode[]): FigmaNode {
+    return {
+      id: '1:1',
+      name: 'Button',
+      type: 'COMPONENT_SET',
+      layoutMode: 'HORIZONTAL',
+      itemSpacing: 24,
+      cornerRadius: 5,
+      strokes: [{ type: 'SOLID', color: { r: 0.592, g: 0.278, b: 1 } }],
+      children,
+    };
+  }
+
+  it('answers Yes on DE1 though the set wrapper carries the #9747FF stroke', () => {
+    const r = DESIGN_CHECKS['design.color-tokens']({
+      componentName: 'Button',
+      node: chromeWrapper([tokenisedVariant()]),
+    });
+    expect(r.answer).toBe('Yes');
+  });
+
+  it('answers Yes on DE4 though the set wrapper spaces its variants rawly', () => {
+    const r = DESIGN_CHECKS['design.spacing-tokens']({
+      componentName: 'Button',
+      node: chromeWrapper([tokenisedVariant()]),
+    });
+    expect(r.answer).toBe('Yes');
+  });
+
+  it("answers Yes on DE5 though the set wrapper has its own cornerRadius", () => {
+    const r = DESIGN_CHECKS['design.radius-tokens']({
+      componentName: 'Button',
+      node: chromeWrapper([tokenisedVariant()]),
+    });
+    expect(r.answer).toBe('Yes');
+  });
+
+  // The evidence count is the visible half of the fix: the denominator is now
+  // the layers that ship, so --verbose layer counts change.
+  it('counts only the shipped layers in its evidence', () => {
+    const r = DESIGN_CHECKS['design.color-tokens']({
+      componentName: 'Button',
+      node: chromeWrapper([tokenisedVariant('1:2'), tokenisedVariant('1:3')]),
+    });
+    expect(r.evidence).toBe('all 2 relevant layer(s) bind colour tokens');
+  });
+
+  // The fix must not pass by excluding too much. A raw value inside a variant
+  // is the defect these norms exist to find.
+  it('still answers No for a raw value inside a variant', () => {
+    const raw: FigmaNode = {
+      id: '1:3',
+      name: 'Badge',
+      type: 'RECTANGLE',
+      fills: [{ type: 'SOLID' }],
+    };
+    const node = chromeWrapper([{ ...tokenisedVariant(), children: [raw] }]);
+    const r = DESIGN_CHECKS['design.color-tokens']({ componentName: 'Button', node });
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toBe('1 of 2 layer(s) use raw colour tokens instead of a token');
+  });
+
+  it('still answers No for raw spacing on a variant itself', () => {
+    const { boundVariables, ...unbound } = tokenisedVariant();
+    const r = DESIGN_CHECKS['design.spacing-tokens']({
+      componentName: 'Button',
+      node: chromeWrapper([unbound]),
+    });
+    expect(r.answer).toBe('No');
+  });
+
+  // Figma paints sections with the same purple by default, and a section can
+  // sit anywhere above or inside the mapped node.
+  it('ignores a SECTION wrapping the component', () => {
+    const section: FigmaNode = {
+      id: '1:0',
+      name: 'Buttons',
+      type: 'SECTION',
+      fills: [{ type: 'SOLID' }],
+      strokes: [{ type: 'SOLID' }],
+      cornerRadius: 8,
+      children: [chromeWrapper([tokenisedVariant()])],
+    };
+    expect(
+      DESIGN_CHECKS['design.color-tokens']({ componentName: 'Button', node: section }).answer,
+    ).toBe('Yes');
+    expect(
+      DESIGN_CHECKS['design.radius-tokens']({ componentName: 'Button', node: section }).answer,
+    ).toBe('Yes');
+  });
+
+  // A slice is an export region. It is never rendered, so it has no
+  // appearance to tokenise.
+  it('ignores a SLICE layer', () => {
+    const node: FigmaNode = {
+      ...tokenisedVariant('1:1'),
+      children: [{ id: '1:9', name: 'Slice 1', type: 'SLICE', fills: [{ type: 'SOLID' }] }],
+    };
+    expect(
+      DESIGN_CHECKS['design.color-tokens']({ componentName: 'Button', node }).answer,
+    ).toBe('Yes');
+  });
+
+  // A set whose variants are untokenised must still answer No, not N/A: the
+  // exclusion removes chrome from the denominator, it does not empty it.
+  it('does not turn a genuinely untokenised set into an N/A', () => {
+    const bare: FigmaNode = {
+      id: '1:2',
+      name: 'State=Default',
+      type: 'COMPONENT',
+      cornerRadius: 4,
+      fills: [{ type: 'SOLID' }],
+    };
+    const node = chromeWrapper([bare]);
+    expect(DESIGN_CHECKS['design.color-tokens']({ componentName: 'B', node }).answer).toBe('No');
+    expect(DESIGN_CHECKS['design.radius-tokens']({ componentName: 'B', node }).answer).toBe('No');
+  });
+
+  // A component set carrying chrome and nothing else is "we have nothing to
+  // measure", which is N/A — not a Yes earned by an empty denominator.
+  it('answers N/A when the chrome was the only thing carrying the property', () => {
+    const plain: FigmaNode = { id: '1:2', name: 'State=Default', type: 'COMPONENT' };
+    const r = DESIGN_CHECKS['design.color-tokens']({
+      componentName: 'B',
+      node: chromeWrapper([plain]),
+    });
+    expect(r.answer).toBe('N/A');
+  });
+
+  // DE3 reads TEXT nodes only, so it was never affected. Pinned so the shared
+  // denominator change is known not to have moved it.
+  it('leaves DE3 unchanged, which never measured chrome', () => {
+    const node = chromeWrapper([
+      {
+        ...tokenisedVariant(),
+        children: [{ id: '1:4', name: 'Label', type: 'TEXT', styles: { text: 'S:body' } }],
+      },
+    ]);
+    expect(DESIGN_CHECKS['design.type-tokens']({ componentName: 'B', node }).answer).toBe('Yes');
+  });
+});
+
 describe('design.layer-names', () => {
   const check = DESIGN_CHECKS['design.layer-names'];
 

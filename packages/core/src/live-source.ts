@@ -1,6 +1,6 @@
 import { CurrentError } from './errors';
 import { silentLogger, type Logger } from './logger';
-import { PROBE_VIEWPORT_HEIGHT, type LiveProbe } from './live-checks';
+import { PROBE_VIEWPORT_HEIGHT, type LiveProbe, type StateProbe } from './live-checks';
 
 /** `preview:` must be a URL — there is nothing to render about a file path. */
 export function isPreviewUrl(value: string): boolean {
@@ -17,6 +17,8 @@ export interface ProberOptions {
   load?: () => Promise<unknown>;
   /** Give up after this many Tab presses. */
   maxTabStops?: number;
+  /** Elements to force pointer states on. Bounds the CDP round trips. */
+  maxStateTargets?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -30,6 +32,19 @@ const DEFAULT_TIMEOUT_MS = 20_000;
  * misconfigured URL would hang the scan.
  */
 const DEFAULT_MAX_TAB_STOPS = 60;
+
+/**
+ * How many elements to force pointer states on.
+ *
+ * Each one costs a handful of CDP round trips, and a preview with more than
+ * twenty interactive elements is a page, not a component — the first twenty
+ * in document order are the component, and the rest is the harness around
+ * it. Raise it with `maxStateTargets` if your previews really are that big.
+ */
+const DEFAULT_MAX_STATE_TARGETS = 20;
+
+/** Native form fields: judged on focus, not hover. See `StateProbe.formField`. */
+const FORM_FIELD_TAGS = ['input', 'textarea', 'select'];
 
 export const PROBER_INSTALL_HINT =
   'Preview probing needs a page renderer. Install it once with `npm i -D playwright` ' +
@@ -188,6 +203,189 @@ const OVERFLOW_SCRIPT = `
 `;
 
 /**
+ * Settle the page before forcing states on it.
+ *
+ * Two things in the way of a clean reading. Focus is still sitting on
+ * whatever the Tab walk left it on, and a focused element's style is not its
+ * baseline. And a hover style behind `transition: background 200ms` reads as
+ * *unchanged* the instant it is forced, because the transition has not run —
+ * so transitions and animations come off, which makes every forced state
+ * settle immediately and the whole pass deterministic. Neither mutation
+ * touches anything already measured: this runs after the overflow pass, the
+ * Tab walk and the unreached sweep, as the last thing the probe does.
+ */
+const SETTLE_SCRIPT = `
+(() => {
+  const el = document.activeElement;
+  if (el && typeof el.blur === 'function' && el !== document.body) el.blur();
+  const style = document.createElement('style');
+  style.textContent =
+    '*, *::before, *::after { transition: none !important; animation: none !important; }';
+  document.head.appendChild(style);
+  return true;
+})()
+`;
+
+/**
+ * Read one element's identity and the style properties a state could change,
+ * called with the element as `this` over CDP.
+ *
+ * The `\\s` is doubled on purpose: this is a template literal, so a single
+ * backslash would reach the page as `/s+/g` and quietly eat the letter s out
+ * of every element name. Same as COLLECT_SCRIPT.
+ *
+ * The property list is the focus-visible set plus the ones hover and pressed
+ * reach for in practice: a gradient swap (`backgroundImage`), a dim
+ * (`opacity`), a lift (`transform`), a tint (`filter`). `cursor` is
+ * deliberately absent — `cursor: pointer` is constant, so it says nothing
+ * about whether the element reacted.
+ */
+const STATE_STYLE_FN = `
+function () {
+  const cs = getComputedStyle(this);
+  const r = this.getBoundingClientRect();
+  const name = (this.getAttribute('aria-label') || this.getAttribute('title') || this.value
+    || this.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
+  return {
+    visible: r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none'
+      && this.getAttribute('aria-hidden') !== 'true' && !this.hasAttribute('disabled'),
+    tag: this.tagName.toLowerCase(),
+    role: this.getAttribute('role'),
+    name: name,
+    style: [cs.outlineStyle, cs.outlineWidth, cs.outlineColor, cs.boxShadow, cs.backgroundColor,
+      cs.backgroundImage, cs.color, cs.borderColor, cs.borderWidth, cs.textDecorationLine,
+      cs.opacity, cs.transform, cs.filter].join('|'),
+  };
+}
+`;
+
+interface StateReading {
+  visible: boolean;
+  tag: string;
+  role: string | null;
+  name: string;
+  style: string;
+}
+
+/**
+ * Force `:hover` and `:hover:active` on each interactive element and record
+ * what moved.
+ *
+ * Forced over CDP (`CSS.forcePseudoState`, the same call DevTools' "force
+ * element state" makes) rather than driven with the mouse. A real pointer
+ * would mean a `mousedown` to read the pressed state, and a `mousedown`
+ * fires the component's own handlers — opening menus, starting drags,
+ * navigating — which changes the page the probe is in the middle of
+ * measuring. Forcing a pseudo-class dispatches no events at all: it asks the
+ * style engine what the element WOULD look like, which is exactly the claim
+ * CO1 makes and nothing more.
+ *
+ * Returns null when the protocol is not there (a non-Chromium renderer, a
+ * Playwright without `newCDPSession`, a refused command). That is "we could
+ * not look", which `checkStates` reports as N/A — never as a failing state.
+ */
+async function probeStates(
+  ctx: PlaywrightContext,
+  page: PlaywrightPage,
+  focusByIndex: Map<number, boolean>,
+  interactiveCount: number,
+  maxTargets: number,
+  logger: Logger,
+): Promise<StateProbe[] | null> {
+  if (typeof ctx.newCDPSession !== 'function') {
+    logger.trace('preview: renderer exposes no CDP session — interaction states not probed');
+    return null;
+  }
+
+  let cdp: PlaywrightCDPSession | null = null;
+  try {
+    cdp = await ctx.newCDPSession(page);
+    await page.evaluate(SETTLE_SCRIPT);
+    await cdp.send('DOM.enable');
+    await cdp.send('CSS.enable');
+    const { root } = (await cdp.send('DOM.getDocument', { depth: -1 })) as {
+      root: { nodeId: number };
+    };
+    const { nodeIds } = (await cdp.send('DOM.querySelectorAll', {
+      nodeId: root.nodeId,
+      selector: INTERACTIVE_SELECTOR,
+    })) as { nodeIds: number[] };
+
+    const states: StateProbe[] = [];
+    // The same selector and the same visibility filter as COLLECT_SCRIPT, in
+    // the same document order, so the nth element measured here is the nth
+    // element the Tab walk catalogued. The count check below is what keeps
+    // that assumption honest.
+    let visible = 0;
+    for (const nodeId of nodeIds) {
+      const baseline = await readState(cdp, nodeId);
+      if (baseline === null || !baseline.visible) continue;
+      const index = visible++;
+      if (states.length >= maxTargets) continue;
+
+      await cdp.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: ['hover'] });
+      const hovered = await readState(cdp, nodeId);
+      await cdp.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: ['hover', 'active'] });
+      const pressed = await readState(cdp, nodeId);
+      await cdp.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: [] });
+
+      states.push({
+        tag: baseline.tag,
+        role: baseline.role,
+        name: baseline.name,
+        hover: hovered !== null && hovered.style !== baseline.style,
+        // Pressed is compared against the baseline, not against hover: a
+        // control that darkens once on hover and no further when pressed has
+        // changed from rest, and "it looks different while you hold it down"
+        // is the state the guideline asks for.
+        pressed: pressed !== null && pressed.style !== baseline.style,
+        focus: focusByIndex.get(index) ?? null,
+        formField: FORM_FIELD_TAGS.includes(baseline.tag),
+      });
+    }
+
+    if (visible !== interactiveCount) {
+      // The page moved between the two passes, so index k here is not index k
+      // there. The states are still good; the focus column is not, and a
+      // guessed focus result would be a No charged to the wrong element.
+      logger.trace(
+        `preview: ${visible} element(s) at the state pass vs ${interactiveCount} at collection — ` +
+          'focus results dropped',
+      );
+      return states.map((s) => ({ ...s, focus: null }));
+    }
+    return states;
+  } catch (err) {
+    logger.trace(`preview: interaction states not probed — ${(err as Error).message}`);
+    return null;
+  } finally {
+    if (cdp !== null) await cdp.detach().catch(() => undefined);
+  }
+}
+
+/** One element's reading, or null when the node has gone away. */
+async function readState(
+  cdp: PlaywrightCDPSession,
+  nodeId: number,
+): Promise<StateReading | null> {
+  try {
+    const resolved = (await cdp.send('DOM.resolveNode', { nodeId })) as {
+      object?: { objectId?: string };
+    };
+    const objectId = resolved.object?.objectId;
+    if (objectId === undefined) return null;
+    const called = (await cdp.send('Runtime.callFunctionOn', {
+      objectId,
+      functionDeclaration: STATE_STYLE_FN,
+      returnByValue: true,
+    })) as { result?: { value?: StateReading } };
+    return called.result?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * A prober backed by Playwright, loaded lazily — same contract as
  * `createPlaywrightRenderer`, and for the same reason: Playwright and its
  * browser are hundreds of megabytes, and a team with no `preview:` mapped
@@ -203,6 +401,7 @@ export function createPlaywrightProber(opts: ProberOptions = {}): PageProber {
   const logger = opts.logger ?? silentLogger;
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxStops = opts.maxTabStops ?? DEFAULT_MAX_TAB_STOPS;
+  const maxStateTargets = opts.maxStateTargets ?? DEFAULT_MAX_STATE_TARGETS;
   const load =
     opts.load ??
     (async () => {
@@ -242,6 +441,7 @@ export function createPlaywrightProber(opts: ProberOptions = {}): PageProber {
     let interactiveCount = 0;
     let focusStops: LiveProbe['focusStops'] = [];
     let unreachable: string[] = [];
+    let states: LiveProbe['states'] = null;
 
     for (const width of sorted) {
       const ctx = await b.newContext({
@@ -266,15 +466,29 @@ export function createPlaywrightProber(opts: ProberOptions = {}): PageProber {
             COLLECT_SCRIPT(INTERACTIVE_SELECTOR, NATIVE_TAGS),
           )) as number;
           interactiveCount = typeof found === 'number' ? found : 0;
-          focusStops = await walkTabStops(page, interactiveCount, maxStops);
+          const walk = await walkTabStops(page, interactiveCount, maxStops);
+          focusStops = walk.stops;
           unreachable = ((await page.evaluate(UNREACHED_SCRIPT)) as string[]) ?? [];
+          // Last, because it blurs the page and kills its transitions. See
+          // SETTLE_SCRIPT: everything above is measured on an untouched page.
+          states =
+            interactiveCount === 0
+              ? []
+              : await probeStates(
+                  ctx,
+                  page,
+                  walk.focusVisibleByIndex,
+                  interactiveCount,
+                  maxStateTargets,
+                  logger,
+                );
         }
       } finally {
         await ctx.close().catch(() => undefined);
       }
     }
 
-    return { url, interactiveCount, focusStops, unreachable, viewports };
+    return { url, interactiveCount, focusStops, unreachable, viewports, states };
   };
 
   probe.close = async () => {
@@ -300,10 +514,13 @@ async function walkTabStops(
   page: PlaywrightPage,
   interactiveCount: number,
   maxStops: number,
-): Promise<LiveProbe['focusStops']> {
+): Promise<{ stops: LiveProbe['focusStops']; focusVisibleByIndex: Map<number, boolean> }> {
   const budget = Math.min(maxStops, Math.max(interactiveCount * 2 + 4, 8));
   const stops: LiveProbe['focusStops'] = [];
   const visited = new Set<number>();
+  // Keyed by position in the catalogued element list, so the state pass can
+  // put each element's focus result next to its hover and pressed ones.
+  const focusVisibleByIndex = new Map<number, boolean>();
 
   for (let i = 0; i < budget; i++) {
     await page.keyboard.press('Tab');
@@ -325,11 +542,12 @@ async function walkTabStops(
     }
     if (visited.has(stop.index)) break;
     visited.add(stop.index);
-    const { index: _index, ...rest } = stop;
+    const { index, ...rest } = stop;
     stops.push(rest);
+    focusVisibleByIndex.set(index, rest.focusVisible);
     if (visited.size === interactiveCount) break;
   }
-  return stops;
+  return { stops, focusVisibleByIndex };
 }
 
 /**
@@ -400,7 +618,13 @@ interface PlaywrightPage {
 }
 interface PlaywrightContext {
   newPage(): Promise<PlaywrightPage>;
+  /** Chromium only, and absent on older Playwright: probeStates degrades. */
+  newCDPSession?(page: PlaywrightPage): Promise<PlaywrightCDPSession>;
   close(): Promise<void>;
+}
+interface PlaywrightCDPSession {
+  send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  detach(): Promise<void>;
 }
 interface PlaywrightBrowser {
   newContext(opts: { viewport: { width: number; height: number } }): Promise<PlaywrightContext>;

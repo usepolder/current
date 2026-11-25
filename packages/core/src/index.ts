@@ -69,6 +69,7 @@ export {
   LIVE_CHECKS,
   checkKeyboardAccess,
   checkBreakpoints,
+  checkStates,
   requestedWidths,
   DEFAULT_BREAKPOINT_WIDTHS,
   PROBE_VIEWPORT_HEIGHT,
@@ -79,6 +80,7 @@ export {
   type LiveAbsence,
   type FocusStop,
   type ViewportProbe,
+  type StateProbe,
 } from './live-checks';
 export {
   isPreviewUrl,
@@ -134,7 +136,7 @@ export {
   MIN_REACH_SCHEMA,
   type UsageMap,
 } from './usage';
-export { scanRepo, type ScanOptions } from './scan';
+export { scanRepo, NO_MANUAL_ANSWER, type ScanOptions } from './scan';
 export {
   appendHistory,
   readHistory,

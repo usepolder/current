@@ -3,7 +3,7 @@ import { scanRepo, parseConfig } from '@usepolder/current-core';
 import {
   BrowserSetupError,
   PLAYWRIGHT_CORE_VERSION,
-  createActionRenderer,
+  createActionBrowsers,
   createBrowserLoader,
   type RuntimeDeps,
 } from '../src/docs-runtime';
@@ -107,7 +107,7 @@ describe('hosted docs through the Action renderer', () => {
       repoRoot: '/tmp',
       config,
       answers: new Map(),
-      renderDocs: createActionRenderer({ trace: () => {} } as never, d),
+      renderDocs: createActionBrowsers({ trace: () => {} } as never, d).renderer,
     });
     const doc = report.components[0].metrics.filter((m) => m.category === 'documentation' && m.source === 'auto');
     expect(doc.length).toBeGreaterThan(0);

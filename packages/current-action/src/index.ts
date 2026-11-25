@@ -11,6 +11,7 @@ import {
   HISTORY_FILE,
   TOKEN_ENV_VAR,
   closeRenderer,
+  closeProber,
   isDocsUrl,
   loadUsage,
   appendHistory,
@@ -29,7 +30,7 @@ import {
 import { BADGE_DIR, BADGE_JSON, BADGE_SVG, badgeJson, badgeMessage, badgeSvg } from './badge';
 import { CURRENT_MARKER, findExistingComment, renderComment } from './comment';
 import { selectMode, writesComment, writesHistory } from './mode';
-import { createActionRenderer, defaultDeps } from './docs-runtime';
+import { createActionBrowsers, defaultDeps } from './docs-runtime';
 import { commitAndPush } from './persist';
 
 const CONFIG_FILE = '.polder.yml';
@@ -103,9 +104,15 @@ async function run(): Promise<void> {
   // Only a URL-mapped docs page needs a browser; a repo without one never
   // triggers the on-demand install.
   const logger = createLogger(verbose, (line) => core.debug(line));
-  const renderDocs = config.components.some((c) => c.docs !== null && isDocsUrl(c.docs))
-    ? createActionRenderer(logger, defaultDeps((m) => core.warning(m)))
-    : null;
+  const needsRenderer = config.components.some((c) => c.docs !== null && isDocsUrl(c.docs));
+  const needsProber = config.components.some((c) => c.preview !== null);
+  const browsers =
+    needsRenderer || needsProber
+      ? createActionBrowsers(logger, defaultDeps((m) => core.warning(m)))
+      : null;
+  const renderDocs = needsRenderer ? browsers!.renderer : null;
+  // A localhost preview cannot work on a runner, but a deployed Storybook can.
+  const probeLive = needsProber ? browsers!.prober : null;
 
   const usageFile = resolveUsageFile(config, workdir);
   const usage = usageFile === null ? null : loadUsage(usageFile);
@@ -120,10 +127,12 @@ async function run(): Promise<void> {
       usage,
       figma: buildFigmaClient(config, verbose),
       renderDocs,
+      probeLive,
       logger,
     });
   } finally {
     await closeRenderer(renderDocs);
+    await closeProber(probeLive);
   }
 
   const t = report.totals;

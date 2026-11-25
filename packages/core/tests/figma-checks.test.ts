@@ -397,6 +397,21 @@ describe('headingMatches', () => {
   it('is case and whitespace insensitive', () => {
     expect(headingMatches('  ACCESSIBILITY  ', 'accessibility')).toBe(true);
   });
+
+  it('matches either side of a compound heading', () => {
+    // A real styleguide heads one section "Behaviour / States". That section
+    // documents interaction states, so DO8 must not score it a No.
+    expect(headingMatches('Behaviour / States', 'states')).toBe(true);
+    expect(headingMatches('Behaviour / States', 'behaviour')).toBe(true);
+    expect(headingMatches('Usage & Content', 'content')).toBe(true);
+    expect(headingMatches('Anatomy and variants', 'variant')).toBe(true);
+    expect(headingMatches('Motion — transitions', 'transition')).toBe(true);
+  });
+
+  it('still anchors each segment', () => {
+    expect(headingMatches('Behaviour / Icon usage', 'usage')).toBe(false);
+    expect(headingMatches('Usage / Stateful behaviour', 'state')).toBe(false);
+  });
 });
 
 describe('extractHtmlHeadings', () => {

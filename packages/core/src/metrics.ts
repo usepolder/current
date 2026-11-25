@@ -5,7 +5,10 @@
  * fixed rubric.
  *
  * `check` is the id of an automated check, or null when only a human can
- * answer. What is automatable was settled by probing Figma's published
+ * answer. Three input contracts are in play: static checks read the
+ * component's source, design checks read its Figma node, and `code.keyboard`
+ * / `code.breakpoints` probe a rendered `preview:` URL in a real browser —
+ * the only way to answer those two, and the reason they are no longer null. What is automatable was settled by probing Figma's published
  * OpenAPI spec (figma/rest-api-spec): `AnnotationsTrait` is declared with an
  * empty property bag, so the REST API exposes no accessibility annotations —
  * DE2 and the screenreader checks stay manual. `layoutMode`,
@@ -53,9 +56,12 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     subcategory: 'A11y',
     guideline: 'Component is accessible by keyboard',
     note: 'Including space, enter and arrow keys to navigate or interact',
-    // Deliberately manual: native elements are keyboard-accessible with no
-    // explicit handler, so "no onKeyDown" would produce constant false "No"s.
-    check: null,
+    // Not answerable from source: native elements are keyboard-accessible
+    // with no explicit handler, so "no onKeyDown" would produce constant
+    // false "No"s. Answered instead by probing a rendered `preview:` — Tab
+    // reachability and a visible focus ring. Components with no preview
+    // mapped report N/A and stay a human's call.
+    check: 'code.keyboard',
   },
   {
     id: 'CO4',
@@ -79,7 +85,10 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     category: 'code',
     subcategory: 'Responsiveness',
     guideline: 'Component is optimised for all breakpoints',
-    check: null,
+    // Probed, not read: whether a component overflows at 320px depends on
+    // its fonts and content, not on anything in its stylesheet. Needs a
+    // `preview:` URL; without one this reports N/A.
+    check: 'code.breakpoints',
   },
   {
     id: 'CO7',

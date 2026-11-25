@@ -11,6 +11,14 @@ import {
   type RenderedPage,
 } from './docs-source';
 import { FigmaError, NoComponentsError } from './errors';
+import {
+  LIVE_CHECKS,
+  requestedWidths,
+  type LiveAbsence,
+  type LiveFacts,
+  type LiveProbe,
+} from './live-checks';
+import { probeLivePages, type PageProber, type ProbedPage } from './live-source';
 import { DESIGN_CHECKS, figmaPropertyNames, type DesignFacts } from './figma-checks';
 import type { FigmaClient, FigmaNode } from './figma-client';
 import { silentLogger, type Logger } from './logger';
@@ -60,8 +68,16 @@ export interface ScanOptions {
    * priority — nothing is weighted by a guess.
    */
   usage?: UsageMap | null;
+  /**
+   * Probes a component's `preview:` URL in a browser. Omit it and the
+   * probe-backed norms (CO3 keyboard, CO6 breakpoints) report N/A with an
+   * install hint, exactly like hosted docs without a renderer.
+   */
+  probeLive?: PageProber | null;
   /** How many docs pages to render at once. Defaults to a small cap. */
   docsConcurrency?: number;
+  /** How many previews to probe at once. Defaults to a small cap. */
+  previewConcurrency?: number;
   now?: () => Date;
 }
 
@@ -77,6 +93,11 @@ interface LoadedComponent {
   docsHeadings: string[] | null;
   docsAbsence: DocsFacts['absence'];
   docsAbsenceDetail?: string;
+  previewUrl: string | null;
+  /** The browser probe of `previewUrl`, or null when there was none. */
+  probe: LiveProbe | null;
+  probeAbsence: LiveAbsence | null;
+  probeAbsenceDetail?: string;
   figmaNode: FigmaNode | null;
 }
 
@@ -134,6 +155,22 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
     });
   }
 
+  // Probed up front like the docs pages, and for the same reason: a browser
+  // launch amortised over every component beats one per component. The
+  // widths come from config, so the probe measures what the norms will ask
+  // about rather than a fixed scale nobody configured.
+  const widths = breakpointWidths(config);
+  let previews = new Map<string, ProbedPage>();
+  if (opts.probeLive !== undefined && opts.probeLive !== null) {
+    const urls = config.components
+      .map((c) => c.preview)
+      .filter((p): p is string => p !== null);
+    previews = await probeLivePages(urls, opts.probeLive, widths, {
+      ...(opts.previewConcurrency === undefined ? {} : { concurrency: opts.previewConcurrency }),
+      logger,
+    });
+  }
+
   const loaded: LoadedComponent[] = [];
   for (const mapping of config.components) {
     const paths = resolvedPaths.get(mapping.name)!;
@@ -159,6 +196,7 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
     }
 
     const docs = loadDocs(mapping.name, paths.docs, opts, docsPages, logger);
+    const live = loadPreview(mapping.name, mapping.preview, opts, previews, logger);
 
     loaded.push({
       name: mapping.name,
@@ -170,6 +208,10 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
       docsHeadings: docs.headings,
       docsAbsence: docs.absence,
       docsAbsenceDetail: docs.detail,
+      previewUrl: mapping.preview,
+      probe: live.probe,
+      probeAbsence: live.absence,
+      probeAbsenceDetail: live.detail,
       figmaNode: mapping.figma === null ? null : figmaNodes.get(mapping.figma) ?? null,
     });
   }
@@ -325,6 +367,64 @@ function loadDocs(
   return { headings, absence: null };
 }
 
+/**
+ * Pick up a component's browser probe.
+ *
+ * Every failure path here is N/A, never No. A preview that would not load
+ * tells us nothing about the component's keyboard support, and scoring it
+ * No would mean a broken Storybook build quietly tanking the code axis of
+ * every component in the system.
+ */
+function loadPreview(
+  component: string,
+  preview: string | null,
+  opts: ScanOptions,
+  previews: ReadonlyMap<string, ProbedPage>,
+  logger: Logger,
+): { probe: LiveProbe | null; absence: LiveAbsence | null; detail?: string } {
+  if (preview === null) return { probe: null, absence: 'unmapped' };
+
+  if (opts.probeLive === undefined || opts.probeLive === null) {
+    logger.trace(`${component}: preview mapped but no prober was provided`);
+    return { probe: null, absence: 'no-prober' };
+  }
+
+  const probed = previews.get(preview);
+  if (probed === undefined) {
+    // Same defensive branch as loadDocs: a disagreement between the prefetch
+    // and this lookup is our bug, and must not read as a verdict.
+    logger.trace(`${component}: ${preview} was never probed`);
+    return { probe: null, absence: 'unreachable', detail: 'preview was not probed' };
+  }
+  if ('error' in probed) {
+    logger.trace(`${component}: preview probe failed — ${probed.error}`);
+    return { probe: null, absence: 'unreachable', detail: probed.error };
+  }
+  logger.trace(
+    `${component}: probed ${preview} — ${probed.probe.interactiveCount} interactive element(s), ` +
+      `${probed.probe.viewports.length} width(s)`,
+  );
+  return { probe: probed.probe, absence: null };
+}
+
+/**
+ * Every width any enabled breakpoints norm asks about.
+ *
+ * A union rather than the first norm's list: a config may well score two
+ * different breakpoint norms (say, one overridden for a narrow utility
+ * component), and probing one scale would leave the other reporting "not
+ * probed at that width" forever.
+ */
+function breakpointWidths(config: CurrentConfig): number[] {
+  const all = new Set<number>();
+  for (const metric of config.metrics) {
+    if (metric.check === 'code.breakpoints') {
+      for (const w of requestedWidths(metric.params)) all.add(w);
+    }
+  }
+  return [...all].sort((a, b) => a - b);
+}
+
 function scoreComponent(
   c: LoadedComponent,
   config: CurrentConfig,
@@ -458,6 +558,22 @@ function runCheck(
     ctx: { figmaMapped: boolean; figmaUnavailable: boolean };
   },
 ): CheckResult {
+  // Probe-backed norms first: they are `code.*` by category but read a
+  // rendered page, not an AST, so a component with no code mapped can still
+  // be scored from its preview.
+  const live = LIVE_CHECKS[checkId];
+  if (live) {
+    const facts: LiveFacts = {
+      componentName: args.component.name,
+      probe: args.component.probe,
+      absence: args.component.probeAbsence,
+      ...(args.component.probeAbsenceDetail === undefined
+        ? {}
+        : { absenceDetail: args.component.probeAbsenceDetail }),
+    };
+    return live(facts, params);
+  }
+
   if (checkId.startsWith('code.')) {
     if (args.codeFacts === null) {
       return {

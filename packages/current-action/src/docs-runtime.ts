@@ -4,7 +4,14 @@ import { createRequire } from 'module';
 import * as os from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
-import { CurrentError, createPlaywrightRenderer, type Logger, type PageRenderer } from '@usepolder/current-core';
+import {
+  CurrentError,
+  createPlaywrightProber,
+  createPlaywrightRenderer,
+  type Logger,
+  type PageProber,
+  type PageRenderer,
+} from '@usepolder/current-core';
 
 /**
  * Exact, not a range: this is fetched from npm at run time on the user's
@@ -65,7 +72,7 @@ export function createBrowserLoader(deps: RuntimeDeps): () => Promise<unknown> {
   return async () => {
     const pkg = path.join(deps.dir, 'node_modules', 'playwright-core', 'package.json');
     if (!deps.exists(pkg)) {
-      deps.warn(`Current: installing playwright-core@${PLAYWRIGHT_CORE_VERSION} to render hosted docs`);
+      deps.warn(`Current: installing playwright-core@${PLAYWRIGHT_CORE_VERSION} to render hosted pages`);
       try {
         await deps.run('npm', [
           'install',
@@ -79,7 +86,7 @@ export function createBrowserLoader(deps: RuntimeDeps): () => Promise<unknown> {
         ]);
       } catch (err) {
         throw new BrowserSetupError(
-          `could not install playwright-core on the runner (${(err as Error).message}), so hosted docs were not read`,
+          `could not install playwright-core on the runner (${(err as Error).message}), so hosted pages were not read`,
         );
       }
     }
@@ -107,7 +114,7 @@ export function createBrowserLoader(deps: RuntimeDeps): () => Promise<unknown> {
             return await chromium.launch(opts);
           } catch (err) {
             throw new BrowserSetupError(
-              `no Chrome on the runner and Chromium could not be installed (${(err as Error).message}), so hosted docs were not read`,
+              `no Chrome on the runner and Chromium could not be installed (${(err as Error).message}), so hosted pages were not read`,
             );
           }
         },
@@ -116,6 +123,21 @@ export function createBrowserLoader(deps: RuntimeDeps): () => Promise<unknown> {
   };
 }
 
-export function createActionRenderer(logger: Logger, deps: RuntimeDeps): PageRenderer {
-  return createPlaywrightRenderer({ logger, load: createBrowserLoader(deps) });
+/**
+ * Renderer and prober off ONE loader.
+ *
+ * A single loader instance matters: it is what makes the on-demand install
+ * happen at most once per run. Two loaders would each check and each warn,
+ * and a repo with both hosted docs and a hosted preview would tell the user
+ * twice that a driver is being installed.
+ */
+export function createActionBrowsers(
+  logger: Logger,
+  deps: RuntimeDeps,
+): { renderer: PageRenderer; prober: PageProber } {
+  const load = createBrowserLoader(deps);
+  return {
+    renderer: createPlaywrightRenderer({ logger, load }),
+    prober: createPlaywrightProber({ logger, load }),
+  };
 }

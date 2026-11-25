@@ -177,7 +177,14 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     category: 'code',
     subcategory: 'Quality',
     guideline: 'Min- and max widths/heights and max. amount of characters are defined',
-    check: null,
+    // Manual until now with no reason recorded against it, unlike CO4 and
+    // DE2 whose manual status was forced by what an API exposes. It was
+    // manual because nobody had built the check. Pseudo-localization is the
+    // check: expand the rendered text by ~40% and an undeclared bound becomes
+    // observable. Not a localisation metric — the output is not a language,
+    // and CO11 was removed for being a language question.
+    note: 'Answered by expanding the rendered text ~40% and measuring what breaks',
+    check: 'code.text-expansion',
   },
   {
     id: 'CO12',

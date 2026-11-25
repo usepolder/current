@@ -9,8 +9,10 @@ import {
   type FocusStop,
   type LiveFacts,
   type LiveProbe,
+  TEXT_EXPANSION_RATIO,
   parseAnnouncement,
   toClassicScript,
+  type ExpansionProbe,
   type PageProber,
   type ReaderReading,
   type ScreenReaderProbe,
@@ -23,6 +25,7 @@ const keyboard = LIVE_CHECKS['code.keyboard'];
 const breakpoints = LIVE_CHECKS['code.breakpoints'];
 const states = LIVE_CHECKS['code.states'];
 const screenreader = LIVE_CHECKS['code.screenreader'];
+const expansion = LIVE_CHECKS['code.text-expansion'];
 
 function stop(overrides: Partial<FocusStop> = {}): FocusStop {
   return { tag: 'button', role: null, name: 'Save', focusVisible: true, native: true, ...overrides };
@@ -71,6 +74,20 @@ function reader(overrides: Partial<ScreenReaderProbe> = {}): ScreenReaderProbe {
   return { stops: [heard()], silent: [], ...overrides };
 }
 
+/** One width that held under expansion. */
+function stressed(width: number, overrides: Partial<ExpansionProbe> = {}): ExpansionProbe {
+  return {
+    width,
+    textNodes: 3,
+    chars: 42,
+    viewportOverflow: false,
+    overflowBy: 0,
+    clipped: [],
+    spilling: [],
+    ...overrides,
+  };
+}
+
 function probe(overrides: Partial<LiveProbe> = {}): LiveProbe {
   return {
     url: 'http://localhost:6006/iframe.html?id=button--primary',
@@ -80,6 +97,7 @@ function probe(overrides: Partial<LiveProbe> = {}): LiveProbe {
     viewports: DEFAULT_BREAKPOINT_WIDTHS.map((w) => viewport(w)),
     states: [state()],
     screenReader: reader(),
+    expansion: DEFAULT_BREAKPOINT_WIDTHS.map((w) => stressed(w)),
     ...overrides,
   };
 }
@@ -741,5 +759,107 @@ describe('parseAnnouncement', () => {
     expect(s.spokenRole).toBeNull();
     expect(s.name).toBe('');
     expect(s.spokenState).toBe(false);
+  });
+});
+
+describe('code.text-expansion (CO10)', () => {
+  // The first live check with a genuine Yes, and the one that makes it
+  // defensible: "does this hold at +40% text" is an objective question with
+  // an observable answer, unlike CO1's or CO4's.
+  it('answers Yes when every width holds under expansion', () => {
+    const r = expansion(facts());
+    expect(r.answer).toBe('Yes');
+    expect(r.evidence).toContain('expanded by ~40%');
+    expect(r.evidence).toContain('42 character(s)');
+  });
+
+  it('answers No when the expanded text pushes the viewport sideways', () => {
+    const r = expansion(
+      facts({
+        probe: probe({
+          expansion: [stressed(320, { viewportOverflow: true, overflowBy: 48 }), stressed(768)],
+        }),
+      }),
+    );
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('overflows the viewport at 1 of 2 width(s)');
+    expect(r.evidence).toContain('320px: overflows by 48px');
+  });
+
+  it('answers No when content spills out of its container', () => {
+    const r = expansion(
+      facts({ probe: probe({ expansion: [stressed(320, { spilling: ['div.label'] })] }) }),
+    );
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('spills out of its container');
+    expect(r.evidence).toContain('div.label');
+  });
+
+  it('answers No when text is cut off with no declared limit', () => {
+    const r = expansion(
+      facts({ probe: probe({ expansion: [stressed(320, { clipped: ['span.title'] })] }) }),
+    );
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('cut off with no declared limit');
+    expect(r.evidence).toContain('span.title');
+  });
+
+  // Verdict order: pushing the viewport sideways breaks the page around the
+  // component, which is more than losing a few words inside it.
+  it('reports the viewport overflow ahead of the clipping', () => {
+    const r = expansion(
+      facts({
+        probe: probe({
+          expansion: [
+            stressed(320, { viewportOverflow: true, overflowBy: 20, clipped: ['span'] }),
+          ],
+        }),
+      }),
+    );
+    expect(r.evidence).toContain('overflows the viewport');
+  });
+
+  // A component with no text cannot have a text-expansion failure, and this
+  // is settled rather than unlooked-at — so it does not go on a human's list.
+  it('answers a settled N/A when the preview renders no text', () => {
+    const r = expansion(
+      facts({ probe: probe({ expansion: [stressed(320, { textNodes: 0, chars: 0 })] }) }),
+    );
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('renders no text');
+    expect(r.needsHuman).toBeUndefined();
+  });
+
+  it('answers N/A when the page could not be stressed at all', () => {
+    const r = expansion(facts({ probe: probe({ expansion: null }) }));
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('could not be re-rendered');
+  });
+
+  it('answers N/A with no preview URL, never No', () => {
+    const r = expansion(facts({ probe: null, absence: null }));
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('no preview URL');
+  });
+
+  it('answers N/A when no width was probed', () => {
+    const r = expansion(facts({ probe: probe({ expansion: [] }) }));
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('not probed at any width');
+  });
+
+  // A width whose text did not expand is still a width that was measured, so
+  // a component that is mostly text and partly not still gets an answer.
+  it('answers Yes when only some widths had text to expand', () => {
+    const r = expansion(
+      facts({
+        probe: probe({ expansion: [stressed(320), stressed(768, { textNodes: 0, chars: 0 })] }),
+      }),
+    );
+    expect(r.answer).toBe('Yes');
+  });
+
+  it('expands by the English-to-German figure, not an invented one', () => {
+    expect(TEXT_EXPANSION_RATIO).toBeCloseTo(0.4);
   });
 });

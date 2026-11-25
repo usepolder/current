@@ -4,6 +4,7 @@ import {
   PROBE_VIEWPORT_HEIGHT,
   type LiveProbe,
   type ScreenReaderProbe,
+  type ExpansionProbe,
   type ScreenReaderStop,
   type StateProbe,
 } from './live-checks';
@@ -215,6 +216,254 @@ const OVERFLOW_SCRIPT = `
   };
 })()
 `;
+
+/**
+ * Pseudo-localize every text run in the preview, and report what was touched.
+ *
+ * Two things happen to each word: its letters are swapped for accented
+ * look-alikes, and it grows by about 40%. Both matter, and for different
+ * reasons. The accents make the substitution obvious at a glance in a
+ * screenshot, so nobody mistakes the output for real content. The growth is
+ * the actual stressor: German, Finnish and Russian run 30-40% longer than
+ * English, and it is LONGER WORDS rather than more of them that breaks a
+ * layout, which is why the padding goes inside each word instead of adding
+ * new ones.
+ *
+ * Wrapped in brackets, as pseudo-localization conventionally is: if the
+ * closing bracket is missing from a screenshot, the string was truncated.
+ * The check measures that geometrically rather than reading it, but the
+ * brackets cost two characters and make the evidence legible to a human
+ * looking at the same page.
+ *
+ * The expanded text nodes are stashed on `window` so the measurement pass can
+ * ask each one how much room it actually needs. Same reasoning as
+ * COLLECT_SCRIPT stashing rather than tagging the DOM: a probe that adds
+ * attributes to the page can change what it is measuring.
+ *
+ * Single-character words are left at their own length. A one-letter word has
+ * no plausible longer translation, and padding it would be inventing a
+ * stressor rather than simulating one.
+ */
+const EXPAND_SCRIPT = (ratio: number, mark: boolean): string => `
+(() => {
+  const MAP = {
+    a:'à', b:'ƃ', c:'ć', d:'ď', e:'é', f:'ƒ', g:'ĝ',
+    h:'ĥ', i:'î', j:'ĵ', k:'ķ', l:'ļ', m:'ḿ', n:'ń',
+    o:'ó', p:'ṕ', q:'ǫ', r:'ř', s:'ś', t:'ţ', u:'û',
+    v:'ṽ', w:'ŵ', x:'ẋ', y:'ý', z:'ž',
+    A:'À', B:'Ɓ', C:'Ć', D:'Ď', E:'É', F:'Ƒ', G:'Ĝ',
+    H:'Ĥ', I:'Î', J:'Ĵ', K:'Ķ', L:'Ļ', M:'Ḿ', N:'Ń',
+    O:'Ó', P:'Ṕ', Q:'Ǫ', R:'Ř', S:'Ś', T:'Ţ', U:'Û',
+    V:'Ṽ', W:'Ŵ', X:'Ẋ', Y:'Ý', Z:'Ž'
+  };
+  const FILLER = 'àéîóû';
+  const word = (w) => {
+    const accented = [...w].map((ch) => MAP[ch] === undefined ? ch : MAP[ch]).join('');
+    if (w.length < 2) return accented;
+    const extra = Math.ceil(w.length * ${ratio});
+    let pad = '';
+    for (let i = 0; i < extra; i++) pad += FILLER[i % FILLER.length];
+    return accented + pad;
+  };
+  const expand = (text) =>
+    '[' + text.split(/(\\s+)/).map((p) => (/^\\s+$/.test(p) ? p : word(p))).join('') + ']';
+
+  const SKIP = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1, TITLE: 1 };
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let n;
+  while ((n = walker.nextNode()) !== null) {
+    if (n.parentElement && SKIP[n.parentElement.tagName]) continue;
+    if (String(n.nodeValue).trim() === '') continue;
+    nodes.push(n);
+  }
+  window.__polderExpanded = nodes;
+
+  let chars = 0;
+  for (const node of nodes) {
+    chars += String(node.nodeValue).length;
+    ${mark ? '' : 'node.nodeValue = expand(node.nodeValue);'}
+  }
+  ${
+    mark
+      ? ''
+      : `for (const el of document.querySelectorAll('[placeholder]')) {
+    el.setAttribute('placeholder', expand(el.getAttribute('placeholder') || ''));
+  }`
+  }
+  return { textNodes: nodes.length, chars: chars };
+})()
+`;
+
+/**
+ * Measure how the stashed text runs and their containers are sitting.
+ *
+ * Run twice — once before the expansion and once after — and only the
+ * difference is reported. That is what keeps the check honest: measured
+ * against real markup, a flex row whose children already spilled and a button
+ * whose label was already clipped both showed up, and charging CO10 for
+ * breakage that pre-dates the expansion would be reporting another norm's bug
+ * under this one.
+ *
+ * Text is measured with a Range rather than from `scrollWidth`, because
+ * `scrollWidth` reports the padding box for an element whose overflow is
+ * `visible` — so text spilling visibly out of a `white-space: nowrap` box,
+ * which is the single most common expansion failure, is invisible to it. A
+ * Range over the text node reports where the glyphs actually are.
+ *
+ * A container that scrolls is never a finding: `overflow: auto` is the author
+ * saying the content may be larger than the box. Nor is one that declares a
+ * limit — `text-overflow: ellipsis`, a line clamp, a `max-width` or a
+ * `max-height` — because a declared limit is CO10 being satisfied. That is
+ * the norm's own wording: the bounds are *defined*.
+ */
+const EXPANSION_MEASURE_SCRIPT = `
+(() => {
+  const de = document.documentElement;
+  const limit = de.clientWidth;
+  const label = (el) => {
+    const cls = (el.className && typeof el.className === 'string')
+      ? '.' + el.className.trim().split(/\\s+/)[0] : '';
+    return el.tagName.toLowerCase() + cls;
+  };
+  const clips = (cs) =>
+    cs.overflowX === 'hidden' || cs.overflowX === 'clip' ||
+    cs.overflowY === 'hidden' || cs.overflowY === 'clip';
+  const scrolls = (cs) =>
+    cs.overflowX === 'auto' || cs.overflowX === 'scroll' ||
+    cs.overflowY === 'auto' || cs.overflowY === 'scroll';
+  const bounded = (cs) =>
+    cs.textOverflow === 'ellipsis' ||
+    (cs.webkitLineClamp && cs.webkitLineClamp !== 'none') ||
+    cs.maxWidth !== 'none' || cs.maxHeight !== 'none';
+  const gone = (cs) =>
+    cs.display === 'none' || cs.visibility === 'hidden' || cs.position === 'fixed';
+  const inner = (el) => {
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    return {
+      right: r.right - parseFloat(cs.borderRightWidth) - parseFloat(cs.paddingRight),
+      bottom: r.bottom - parseFloat(cs.borderBottomWidth) - parseFloat(cs.paddingBottom),
+    };
+  };
+
+  const clipped = [];
+  const spilling = [];
+
+  // Each expanded run against the box that is supposed to hold it.
+  for (const node of (window.__polderExpanded || [])) {
+    const host = node.parentElement;
+    if (!host) continue;
+    const cs = getComputedStyle(host);
+    if (gone(cs) || scrolls(cs)) continue;
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const t = range.getBoundingClientRect();
+    if (t.width === 0 && t.height === 0) continue;
+    const box = inner(host);
+    if (t.right <= box.right + 1 && t.bottom <= box.bottom + 1) continue;
+    if (clips(cs)) {
+      if (!bounded(cs)) clipped.push(label(host));
+    } else {
+      spilling.push(label(host));
+    }
+  }
+
+  // Elements pushed out of an ancestor that neither clips nor scrolls. Catches
+  // the layout failures the text measurement cannot see, such as a flex row
+  // whose children refuse to shrink. Absolutely positioned elements are out:
+  // they are placed relative to something else by design.
+  for (const el of document.querySelectorAll('body *')) {
+    const cs = getComputedStyle(el);
+    if (gone(cs) || cs.position === 'absolute') continue;
+    const parent = el.parentElement;
+    if (!parent || parent === document.body) continue;
+    const pcs = getComputedStyle(parent);
+    if (scrolls(pcs) || clips(pcs) || bounded(pcs)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) continue;
+    if (r.right > inner(parent).right + 1) spilling.push(label(el));
+  }
+
+  const overflowing = [...document.querySelectorAll('body *')]
+    .filter((el) => {
+      const cs = getComputedStyle(el);
+      if (gone(cs)) return false;
+      return el.getBoundingClientRect().right > limit + 1;
+    })
+    .slice(0, 5)
+    .map(label);
+
+  return {
+    horizontalScroll: de.scrollWidth > limit + 1,
+    overflowBy: Math.max(de.scrollWidth - limit, 0),
+    overflowing: [...new Set(overflowing)],
+    clipped: [...new Set(clipped)],
+    spilling: [...new Set(spilling)],
+  };
+})()
+`;
+
+/** How much longer each word gets. ~40% is the English-to-German figure. */
+export const TEXT_EXPANSION_RATIO = 0.4;
+
+interface ExpansionMeasurement {
+  horizontalScroll: boolean;
+  overflowBy: number;
+  overflowing: string[];
+  clipped: string[];
+  spilling: string[];
+}
+
+/**
+ * Stress one already-loaded page with expanded text and report only what the
+ * expansion broke.
+ *
+ * Destructive: it rewrites the page's text. It therefore runs last at every
+ * width, after everything else this tool measures — including the screen
+ * reader, whose announcements would otherwise all be pseudo-localized.
+ *
+ * Returns null on any failure, which `checkTextExpansion` reports as an N/A.
+ */
+async function probeExpansion(
+  page: PlaywrightPage,
+  width: number,
+  logger: Logger,
+): Promise<ExpansionProbe | null> {
+  try {
+    // Marks the text runs without rewriting them, so the baseline measures
+    // exactly the set the expansion will touch.
+    await page.evaluate(EXPAND_SCRIPT(TEXT_EXPANSION_RATIO, true));
+    const before = (await page.evaluate(
+      EXPANSION_MEASURE_SCRIPT,
+    )) as ExpansionMeasurement;
+
+    const applied = (await page.evaluate(EXPAND_SCRIPT(TEXT_EXPANSION_RATIO, false))) as {
+      textNodes: number;
+      chars: number;
+    };
+    // Expanded glyphs change every box they touch, and a web font that is
+    // already loaded still needs a layout pass before the new text is placed.
+    await page.evaluate('document.fonts ? document.fonts.ready.then(() => true) : true');
+    const after = (await page.evaluate(EXPANSION_MEASURE_SCRIPT)) as ExpansionMeasurement;
+
+    const added = (now: string[], was: string[]): string[] =>
+      now.filter((x) => !was.includes(x)).slice(0, 5);
+
+    return {
+      width,
+      textNodes: applied.textNodes,
+      chars: applied.chars,
+      viewportOverflow: after.horizontalScroll && !before.horizontalScroll,
+      overflowBy: Math.round(after.overflowBy),
+      clipped: added(after.clipped, before.clipped),
+      spilling: added(after.spilling, before.spilling),
+    };
+  } catch (err) {
+    logger.trace(`preview: text expansion not probed at ${width}px — ${(err as Error).message}`);
+    return null;
+  }
+}
 
 /**
  * Settle the page before forcing states on it.
@@ -802,6 +1051,8 @@ export function createPlaywrightProber(opts: ProberOptions = {}): PageProber {
     let unreachable: string[] = [];
     let states: LiveProbe['states'] = null;
     let screenReader: LiveProbe['screenReader'] = null;
+    const expansion: ExpansionProbe[] = [];
+    let expansionFailed = false;
 
     for (const width of sorted) {
       const ctx = await b.newContext({
@@ -852,12 +1103,32 @@ export function createPlaywrightProber(opts: ProberOptions = {}): PageProber {
               ? { stops: [], silent: [] }
               : await probeScreenReader(page, loadScreenReader, maxReaderStops, logger);
         }
+
+        // Dead last at every width, because it rewrites the page's text.
+        // Everything above is measured on a page nobody has edited — the
+        // screen reader especially, whose announcements would otherwise all
+        // come back pseudo-localized.
+        const stressed = await probeExpansion(page, width, logger);
+        if (stressed === null) expansionFailed = true;
+        else expansion.push(stressed);
       } finally {
         await ctx.close().catch(() => undefined);
       }
     }
 
-    return { url, interactiveCount, focusStops, unreachable, viewports, states, screenReader };
+    return {
+      url,
+      interactiveCount,
+      focusStops,
+      unreachable,
+      viewports,
+      states,
+      screenReader,
+      // One width failing to stress is not a partial answer: the norm asks
+      // whether the bounds hold, and an unmeasured width could be the one
+      // that breaks. All or nothing, same as `states`.
+      expansion: expansionFailed ? null : expansion,
+    };
   };
 
   probe.close = async () => {

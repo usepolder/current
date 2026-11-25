@@ -40,12 +40,12 @@ const require = createRequire(import.meta.url);
 const core = require('../packages/core/lib/index.js');
 
 /**
- * [label, body, expected CO4 answer]
+ * [label, body, expected answer]
  *
- * The expectations are not guesses. Each was read off the reader's own output
+ * The expectations are not guesses. Each was read off the probe's own output
  * first, and the surprising ones carry the reason.
  */
-const CASES = [
+const SCREEN_READER_CASES = [
   // --- the clean read: never Yes, always N/A ---
   [
     'named controls',
@@ -97,14 +97,112 @@ const CASES = [
   ['nothing interactive', '<p>Just text.</p>', 'N/A'],
 ];
 
+/**
+ * [label, body, expected CO10 answer]
+ *
+ * These run at 400px, narrow enough that a fixed-width box is under real
+ * pressure, and every body is styled inline so the fixture is readable next
+ * to its expectation.
+ *
+ * Two of them exist because the first draft got them wrong. "already spilling"
+ * and "already clipped" are broken BEFORE the text is touched, and without
+ * the baseline diff both were reported as CO10 failures — charging this norm
+ * for breakage it did not cause.
+ */
+const EXPANSION_CASES = [
+  // --- holds under expansion ---
+  ['fluid button', '<button style="padding:8px 16px;font:14px sans-serif">Save changes</button>', 'Yes'],
+  [
+    'wrapping div',
+    '<div style="width:90px;font:14px sans-serif;border:1px solid">Save changes</div>',
+    'Yes',
+  ],
+
+  // --- a declared limit IS CO10 being satisfied, not failed ---
+  [
+    'ellipsis declared',
+    '<div style="width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:14px sans-serif">Save changes</div>',
+    'Yes',
+  ],
+  [
+    'max-width declared',
+    '<div style="max-width:90px;overflow:hidden;white-space:nowrap;font:14px sans-serif">Save changes</div>',
+    'Yes',
+  ],
+  [
+    'line clamp declared',
+    '<div style="width:90px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;font:14px sans-serif">Save the changes now</div>',
+    'Yes',
+  ],
+  // overflow: auto is the author saying the content may exceed the box.
+  [
+    'scrollable',
+    '<div style="width:90px;overflow:auto;white-space:nowrap;font:14px sans-serif">Save changes</div>',
+    'Yes',
+  ],
+
+  // --- spills out of its container ---
+  [
+    'nowrap, overflow visible',
+    '<div style="width:90px;white-space:nowrap;font:14px sans-serif;border:1px solid">Save changes</div>',
+    'No',
+  ],
+
+  // --- cut off with nothing declaring it may be ---
+  [
+    'hidden, no ellipsis',
+    '<div style="width:90px;overflow:hidden;white-space:nowrap;font:14px sans-serif">Save changes</div>',
+    'No',
+  ],
+
+  // --- pushes the viewport sideways ---
+  [
+    'viewport overflow',
+    '<div style="white-space:nowrap;font:14px sans-serif;width:max-content">Save the changes now please Save the changes now please </div>',
+    'No',
+  ],
+
+  // --- regression: breakage that pre-dates the expansion is not CO10's ---
+  [
+    'already spilling',
+    '<div style="display:flex;width:120px;border:1px solid"><span style="flex:0 0 auto;white-space:nowrap;font:14px sans-serif">Save changes</span><span style="flex:0 0 auto;white-space:nowrap;font:14px sans-serif">Cancel</span></div>',
+    'Yes',
+  ],
+  [
+    'already clipped',
+    '<button style="height:18px;overflow:hidden;width:200px;font:14px sans-serif">Save changes now and later too</button>',
+    'Yes',
+  ],
+
+  // --- nothing to stress ---
+  ['no text at all', '<div style="width:40px;height:40px;background:#ccc"></div>', 'N/A'],
+];
+
+const SUITES = [
+  { name: 'CO4  code.screenreader', check: 'code.screenreader', cases: SCREEN_READER_CASES, width: 1280 },
+  { name: 'CO10 code.text-expansion', check: 'code.text-expansion', cases: EXPANSION_CASES, width: 400 },
+];
+
+/** Every case across every suite, so one server can serve them all. */
+const ALL = SUITES.flatMap((s) => s.cases.map((c) => ({ suite: s, case: c })));
+
 const server = http.createServer((req, res) => {
   const i = Number(req.url.slice(1));
-  const body = CASES[i] === undefined ? '<p>404</p>' : CASES[i][1];
+  const body = ALL[i] === undefined ? '<p>404</p>' : ALL[i].case[1];
   res.writeHead(200, {
-    'content-type': 'text/html',
-    'content-security-policy': "default-src 'self'; script-src 'self'",
+    // `script-src 'self'` is the point: CO4 injects a screen reader into the
+    // page, and a deployed Storybook sends a policy like this one, so the
+    // injection has to survive it. `style-src` has to allow inline styles or
+    // the fixtures below are served unstyled — which is not a hypothetical:
+    // it silently broke three CO10 fixtures, every one of which reported a
+    // clean Yes because its `width` never applied. Real design systems need
+    // inline styles too, for the same reason every CSS-in-JS library does.
+    'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
   });
-  res.end(`<!doctype html><html><head><title>fixture</title></head><body>${body}</body></html>`);
+  res.end(
+    `<!doctype html><html><head><title>fixture</title></head>` +
+      `<body style="margin:0">${body}</body></html>`,
+  );
 });
 
 const verbose = process.argv.includes('--verbose');
@@ -112,34 +210,46 @@ const verbose = process.argv.includes('--verbose');
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 const prober = core.createPlaywrightProber({
-  logger: { trace: (m) => verbose && console.log(`   trace: ${m}`) },
+  logger: { trace: (m) => verbose && console.log(`      trace: ${m}`) },
 });
-const check = core.LIVE_CHECKS['code.screenreader'];
 
 let failed = 0;
-for (let i = 0; i < CASES.length; i++) {
-  const [label, , want] = CASES[i];
-  const probe = await prober(`${base}/${i}`, [1280]);
-  const result = check({ componentName: 'Fixture', probe, absence: null });
-  const ok = result.answer === want;
-  if (!ok) failed++;
-  console.log(
-    `${ok ? 'pass' : 'FAIL'}  ${label.padEnd(24)} ${result.answer.padEnd(4)} (want ${want})`,
-  );
-  if (!ok || verbose) {
-    console.log(`      ${result.evidence}`);
-    for (const s of probe.screenReader?.stops ?? []) {
-      console.log(
-        `        phrase=${JSON.stringify(s.phrase)} role=${s.spokenRole} ` +
-          `name=${JSON.stringify(s.name)} state=${s.spokenState} expects=${s.expectsState}`,
-      );
+let suiteStart = 0;
+for (const suite of SUITES) {
+  console.log(`\n${suite.name}`);
+  const check = core.LIVE_CHECKS[suite.check];
+  for (let j = 0; j < suite.cases.length; j++) {
+    const [label, , want] = suite.cases[j];
+    const probe = await prober(`${base}/${suiteStart + j}`, [suite.width]);
+    const result = check({ componentName: 'Fixture', probe, absence: null });
+    const ok = result.answer === want;
+    if (!ok) failed++;
+    console.log(
+      `  ${ok ? 'pass' : 'FAIL'}  ${label.padEnd(26)} ${result.answer.padEnd(4)} (want ${want})`,
+    );
+    if (!ok || verbose) {
+      console.log(`        ${result.evidence}`);
+      for (const s of probe.screenReader?.stops ?? []) {
+        console.log(
+          `          phrase=${JSON.stringify(s.phrase)} role=${s.spokenRole} ` +
+            `name=${JSON.stringify(s.name)} state=${s.spokenState} expects=${s.expectsState}`,
+        );
+      }
+      for (const s of probe.screenReader?.silent ?? []) console.log(`          silent: ${s}`);
+      for (const e of probe.expansion ?? []) {
+        console.log(
+          `          ${e.width}px nodes=${e.textNodes} chars=${e.chars} vp=${e.viewportOverflow}` +
+            ` by=${e.overflowBy} clipped=${JSON.stringify(e.clipped)}` +
+            ` spilling=${JSON.stringify(e.spilling)}`,
+        );
+      }
     }
-    for (const s of probe.screenReader?.silent ?? []) console.log(`        silent: ${s}`);
   }
+  suiteStart += suite.cases.length;
 }
 
 await core.closeProber(prober);
 server.close();
 
-console.log(failed === 0 ? `\nall ${CASES.length} fixtures pass` : `\n${failed} FAILED`);
+console.log(failed === 0 ? `\nall ${ALL.length} fixtures pass` : `\n${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);

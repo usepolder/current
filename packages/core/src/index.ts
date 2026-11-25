@@ -91,6 +91,7 @@ export {
   checkBreakpoints,
   checkStates,
   checkScreenReader,
+  checkTextExpansion,
   requestedWidths,
   DEFAULT_BREAKPOINT_WIDTHS,
   PROBE_VIEWPORT_HEIGHT,
@@ -104,6 +105,7 @@ export {
   type StateProbe,
   type ScreenReaderProbe,
   type ScreenReaderStop,
+  type ExpansionProbe,
 } from './live-checks';
 export {
   isPreviewUrl,
@@ -114,6 +116,7 @@ export {
   ProberUnavailableError,
   PROBER_INSTALL_HINT,
   SCREEN_READER_INSTALL_HINT,
+  TEXT_EXPANSION_RATIO,
   parseAnnouncement,
   toClassicScript,
   type PageProber,

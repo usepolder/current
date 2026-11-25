@@ -22,20 +22,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # `uses: ./` needs the committed ncc bundle. Until someone has run
-      # `npm run build:action` and committed dist/, skip rather than fail:
-      # a red X on a repo nobody can run yet helps no one.
-      - id: bundle
-        run: |
-          if [ -f packages/current-action/dist/index.js ]; then
-            echo "built=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "built=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Action bundle not committed yet — run 'npm run build:action' and commit packages/current-action/dist to enable the dogfood run."
-          fi
+      # The bundle is built here rather than committed to the repo. It used to
+      # be committed, which meant CI scored every PR with whatever bundle was
+      # in the repo instead of the source in the PR — the CO3/CO6 probes and a
+      # rubric-fingerprint change both shipped invisibly that way, with the
+      # score comment reporting healthy numbers from old code.
+      #
+      # Node 24 because action.yml declares `using: node24`, so this is the
+      # runtime the bundle will actually be executed on.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Build the Action bundle
+        run: npm run build:action
 
-      - if: steps.bundle.outputs.built == 'true'
-        uses: ./
+      - uses: ./
         with:
           working-directory: examples/dogfood
         env:

@@ -1,6 +1,11 @@
 # Publishes on a version tag: v1.2.3 -> npm + a GitHub release.
-# The Action bundle is rebuilt and committed here so `uses: usepolder/current@vX.Y.Z`
-# always points at a dist/ that matches the tagged source.
+#
+# The Action bundle is NOT committed to the repo any more (current.yml builds
+# it per run), so a tag cut from main carries no dist/. action.yml names
+# packages/current-action/dist/index.js as its entry point and GitHub builds
+# nothing for a consumer, so `uses: usepolder/current@vX.Y.Z` needs that file
+# to be IN the tagged tree. Until the release flow puts it there, the guard
+# below stops the release rather than publishing an Action that cannot start.
 name: Release
 on:
   push:
@@ -29,14 +34,24 @@ jobs:
       - name: Build packages and the Action bundle
         run: npm run build:action
 
-      - name: Fail if the committed Action bundle is stale
+      # Was: "fail if the committed bundle is stale". Nothing is committed now,
+      # so staleness is not the risk any more — absence is.
+      - name: Refuse to publish a tag with no Action bundle in its tree
         run: |
-          if ! git diff --quiet -- packages/current-action/dist; then
-            echo "::error::packages/current-action/dist is out of date."
-            echo "Run 'npm run build:action' and commit the result before tagging."
-            git diff --stat -- packages/current-action/dist
-            exit 1
+          if git ls-tree -r --name-only HEAD -- packages/current-action/dist \
+            | grep -q 'dist/index.js'; then
+            echo "Tagged tree carries the Action bundle."
+            exit 0
           fi
+          echo "::error::This tag has no packages/current-action/dist/index.js, so"
+          echo "  uses: usepolder/current@${GITHUB_REF_NAME}"
+          echo "would fail for every consumer: action.yml names that file as its entry"
+          echo "point and GitHub builds nothing for a consuming workflow."
+          echo ""
+          echo "The bundle is no longer committed to main, so the release flow has to"
+          echo "put it on the tag. That decision is open - see the pull request that"
+          echo "dropped it. Nothing was published."
+          exit 1
 
       # No NODE_AUTH_TOKEN: npm authenticates via OIDC (trusted publishing),
       # configured per package on npmjs.com against this repo and this

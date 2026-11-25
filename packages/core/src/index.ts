@@ -47,8 +47,19 @@ export {
   type CodeCheck,
   normalisePropName,
   type CheckResult,
+  type CodeConnectFacts,
   type CodeFacts,
 } from './code-checks';
+export {
+  CODE_CONNECT_CONFIG,
+  extractCodeConnect,
+  indexCodeConnect,
+  mappingFor,
+  normaliseNodeId,
+  parseFigmaUrl,
+  type CodeConnectIndex,
+  type CodeConnectMapping,
+} from './code-connect';
 export {
   DEFAULT_MIN_BOUND,
   DESIGN_CHECKS,

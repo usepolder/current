@@ -115,6 +115,17 @@ describe('scanRepo — end to end against a fixture design system', () => {
     expect(wrapper.scores.documentation.score).toBeNull();
   });
 
+  it('answers CO12 from the fixture’s Code Connect mapping', async () => {
+    const report = await scanFixture();
+    const button = byName(report, 'Button').metrics.find((m) => m.metricId === 'CO12');
+    expect(button).toMatchObject({ answer: 'Yes', source: 'auto' });
+    expect(button!.evidence).toContain('src/Button/Button.figma.tsx');
+
+    // Wrapper has no mapping, and this repo does use Code Connect.
+    const wrapper = byName(report, 'Wrapper').metrics.find((m) => m.metricId === 'CO12');
+    expect(wrapper).toMatchObject({ answer: 'No', source: 'auto' });
+  });
+
   it('prefers a human answer over an automated check', async () => {
     const report = await scanFixture();
     const button = byName(report, 'Button');
@@ -172,7 +183,7 @@ describe('scanRepo — end to end against a fixture design system', () => {
   });
 
   it('does not score the design axis from leftover manual answers on a degraded run', async () => {
-    // Button has four manual design answers, all Yes. Scoring the axis from
+    // Button has two manual design answers, both Yes. Scoring the axis from
     // those alone would report design 100% while seven automated design
     // metrics never ran — a confident number for a measurement that did not
     // happen.
@@ -197,7 +208,7 @@ components:
   Button:
     figma: "1:10"
 metrics:
-  manual: [DE1, DE2, DE3, DE4, DE5, DE6, DE7, DE8, DE9, DE10, DE11]
+  manual: [DE1, DE2, DE3, DE4, DE5, DE6, DE7, DE9, DE10]
 `));
     const answers = parseAnswers('Button:\n  DE1: Yes\n  DE3: Yes\n  DE7: No\n');
 

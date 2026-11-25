@@ -43,7 +43,7 @@ describe('parseConfig', () => {
     expect(config.threshold).toBe(60);
     expect(config.minConfidence).toBe(3);
     expect(config.failUnder).toBe(0);
-    expect(config.metrics).toHaveLength(32);
+    expect(config.metrics).toHaveLength(DEFAULT_METRICS.length);
   });
 
   it('reports malformed YAML with the file and line', () => {
@@ -214,7 +214,7 @@ describe('customising the norms', () => {
     const m = metrics(
       indent('custom:\n  - id: ORG1\n    category: design\n    guideline: Dark mode variant exists'),
     );
-    expect(m).toHaveLength(33);
+    expect(m).toHaveLength(DEFAULT_METRICS.length + 1);
     expect(m.find((x) => x.id === 'ORG1')).toMatchObject({
       category: 'design',
       subcategory: 'Custom',
@@ -252,7 +252,7 @@ describe('customising the norms', () => {
     expect(do2.params).toEqual({ headings: ['usage', 'best practices'] });
     expect(do2.check).toBe('docs.section');
     expect(do2.category).toBe('documentation');
-    expect(m).toHaveLength(32);
+    expect(m).toHaveLength(DEFAULT_METRICS.length);
     // Untouched norms are exactly the defaults.
     expect(m.find((x) => x.id === 'DO3')).toEqual(DEFAULT_METRICS.find((x) => x.id === 'DO3'));
   });

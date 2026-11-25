@@ -72,7 +72,7 @@ Components Reach saw in use that are not mapped in `.polder.yml` are named, sinc
 
 ## The metrics
 
-32 checks across three categories, transcribed from a real design system audit: 12 code, 11 design, 9 documentation. They roll up per category as:
+30 checks across three categories, transcribed from a real design system audit: 12 code, 9 design, 9 documentation. They roll up per category as:
 
 ```
 score = Yes / (Yes + No)        N/A is excluded from the denominator
@@ -80,14 +80,16 @@ score = Yes / (Yes + No)        N/A is excluded from the denominator
 
 That is deliberately the same arithmetic a spreadsheet audit uses, because the point is to replace the spreadsheet without changing what the number means.
 
-About 20 of the 32 are checked automatically. (This is the default set; [you can change it](#your-own-norms).) The rest need a person, and Current does not pretend otherwise: it reads your answers for those from a file you own.
+23 of the 30 are checked automatically. (This is the default set; [you can change it](#your-own-norms).) The rest need a person, and Current does not pretend otherwise: it reads your answers for those from a file you own.
 
-That 20 is not spread evenly, and the axes are not equally trustworthy:
+The audit sheet this came from had 32. Two are gone. **DE8**, "all layers, groups and frames are necessary", was tidiness: nobody acts on it from a quadrant, no API field answers it, and it sat permanently unanswered making the design axis look thinner than it was. **DE11**, "Figma component reflects what's in code", asked exactly what **CO12** asks from the other side — and a rubric that scores one claim twice weights it twice. CO12 keeps the claim and is now [answered from Code Connect](#5-connect-code-to-figma-optional). Ids are not renumbered, so the answers you have already written still point at the norms they were written for.
+
+Those 23 are not spread evenly, and the axes are not equally trustworthy:
 
 | Axis | Automated | Checked against a human verdict? |
 | --- | --- | --- |
-| Code | 5 of 12 | **No.** Never, on any component. |
-| Design | 7 of 11 | Yes, per metric, against a hand-audited production system. |
+| Code | 8 of 12 | **No.** Never, on any component. Three of the eight do not read source at all: CO3 and CO6 probe a browser, CO12 reads your Code Connect mappings. |
+| Design | 7 of 9 | Yes, per metric, against a hand-audited production system. |
 | Documentation | 8 of 9 | Not separately. Its checks match a heading, and the evidence string shows which heading matched. |
 
 The code axis is the least automated and the only one whose automation has
@@ -103,11 +105,11 @@ behind its automation. The design-axis validation, by contrast, found a real
 bug — a check reading Figma bound-variable keys that Figma never emits, wrong
 on every component it looked at.
 
-**Checked automatically** — ARIA attributes present, text alternatives on non-text content, hardcoded colours and px values, component naming, code/Figma property parity, colour + type + spacing + radius token binding, layer naming, Auto Layout, prototype wiring, whether each documented section exists, and — for components with a `preview:` URL — keyboard reachability and breakpoint overflow, probed in a real browser.
+**Checked automatically** — ARIA attributes present, text alternatives on non-text content, hardcoded colours and px values, component naming, code/Figma property parity, whether the code declares which Figma node it implements, colour + type + spacing + radius token binding, layer naming, Auto Layout, prototype wiring, whether each documented section exists, and — for components with a `preview:` URL — keyboard reachability and breakpoint overflow, probed in a real browser.
 
 ### Answering the manual metrics
 
-10 of the 32 need a person, and on a large system that is a lot of typing into
+7 of the 30 need a person, and on a large system that is a lot of typing into
 YAML. `current export` writes exactly the questions still outstanding to a CSV,
 with the automated findings for that component's axis beside each one:
 
@@ -118,7 +120,7 @@ with the automated findings for that component's axis beside each one:
 Fill in the answer column, then `current import` folds it back into
 `.polder.answers.yml`. Three things follow from that shape:
 
-- **The review splits across people.** The 10 metrics are 5 code, 4 design and
+- **The review splits across people.** The 7 metrics are 4 code, 2 design and
   1 documentation — an engineer, a designer and a writer. A sheet can go to
   three people at once.
 - **A blank cell stays unanswered.** It does not become `N/A`. The report keeps
@@ -256,7 +258,30 @@ No `preview:`, no browser launched and both norms report `N/A` — and so does a
 
 One caveat worth stating plainly: point this at a *component*, not at a page. A whole-page URL reports every link in the chrome as an interactive element, which is true and useless.
 
-### 5. Answer the manual metrics
+### 5. Connect code to Figma (optional)
+
+CO12 asks whether a component's composition mirrors the Figma component it is built from. That is the one norm where the two sides of the audit have to agree with each other, and [Figma Code Connect](https://developers.figma.com/docs/code-connect/) is where a team writes that agreement down:
+
+```tsx
+// src/components/Button/Button.figma.tsx
+import figma from '@figma/code-connect/react';
+import { Button } from './Button';
+
+figma.connect(Button, 'https://www.figma.com/design/<file-key>/DS?node-id=1-24', {
+  props: { label: figma.string('Label'), size: figma.enum('Size', { Small: 'small' }) },
+  example: ({ label, size }) => <Button size={size}>{label}</Button>,
+});
+```
+
+Current reads those calls out of the repo and answers CO12 from them:
+
+- **Yes** — a `figma.connect()` names this component and points at the node `.polder.yml` maps it to. The evidence names the file and the node, so the answer is checkable.
+- **No** — the repo uses Code Connect and this component has no mapping, or its mapping points at a *different* node than the one being audited. That second case is the interesting one: it catches a component whose Figma counterpart was swapped, renamed or forked while the code kept pointing at the old node.
+- **N/A** — the repo has no Code Connect at all. It needs a paid Figma plan and a publish step, so "this team does not use it" and "this component is missing its mapping" are different findings, and only the second is a `No`. Answer CO12 by hand, as before, and nothing about your score changes.
+
+Two things to know about how the mappings are found. They are read from the repo, not from Figma, because no REST endpoint reports published Code Connect mappings — and the repo holds the source `figma connect publish` reads anyway, so this answers the same question one step earlier. And they are found by Code Connect's own convention: files named `*.figma.ts`/`*.figma.tsx` anywhere in the repo (`node_modules` and build directories excluded), plus any `figma.connect()` written into the component's own file. Custom `codeConnect.include` globs in `figma.config.json` are not expanded, so a repo that keeps its mappings somewhere else entirely reports N/A rather than a wrong No.
+
+### 6. Answer the manual metrics
 
 `.polder.answers.yml`:
 
@@ -292,7 +317,7 @@ current:
 
 ## Your own norms
 
-The 32 metrics are a starting point, not a standard you have to adopt. Every organisation prioritises different things, so all of them can be changed, and you can add your own.
+The 30 metrics are a starting point, not a standard you have to adopt. Every organisation prioritises different things, so all of them can be changed, and you can add your own.
 
 ```yaml
 current:
@@ -337,7 +362,7 @@ The checks a norm can name:
 | `docs.section` | the docs have a heading starting with one of these | `headings: [...]` |
 | `code.contains` | the component's source contains at least one of these | `text: [...]` |
 | `code.forbids` | the component's source contains none of these | `text: [...]` |
-| `code.aria-attributes`, `code.text-alternatives`, `code.token-usage`, `code.semantic-name`, `code.figma-prop-parity` | as in [the metrics](#the-metrics) | none |
+| `code.aria-attributes`, `code.text-alternatives`, `code.token-usage`, `code.semantic-name`, `code.figma-prop-parity`, `code.figma-connect` | as in [the metrics](#the-metrics) | none |
 | `design.color-tokens`, `design.type-tokens`, `design.spacing-tokens`, `design.radius-tokens` | as in [the metrics](#the-metrics) | `min_bound: 100` (optional) |
 | `design.layer-names`, `design.prototyping`, `design.auto-layout` | as in [the metrics](#the-metrics) | none |
 

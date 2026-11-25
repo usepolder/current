@@ -1,14 +1,26 @@
 /**
- * The 32 default metrics, transcribed from a production design system's "Component Health"
+ * The 30 default metrics, transcribed from a production design system's "Component Health"
  * audit sheet (Template tab). Teams can disable any of them or flip an
  * automated one to manual in `.polder.yml`; this is a starting point, not a
  * fixed rubric.
  *
+ * Two of the sheet's norms are not here. DE8 ("all layers, groups and frames
+ * are necessary") is tidiness: no reader of the quadrant acts on it, and no
+ * API field answers it, so it was a permanent manual question whose only
+ * effect was to make the design axis look unanswered. DE11 ("Figma component
+ * reflects what's in code") asked exactly what CO12 asks, from the other
+ * side, and a rubric that scores one claim twice weights it twice; CO12 keeps
+ * it, now answered from Code Connect. Ids are never renumbered — DE9 stays
+ * DE9 — so existing answer files keep pointing at the norms they were written
+ * for, and the gap is the record of what was dropped.
+ *
  * `check` is the id of an automated check, or null when only a human can
- * answer. Three input contracts are in play: static checks read the
- * component's source, design checks read its Figma node, and `code.keyboard`
+ * answer. Four input contracts are in play: static checks read the
+ * component's source, design checks read its Figma node, `code.keyboard`
  * / `code.breakpoints` probe a rendered `preview:` URL in a real browser —
- * the only way to answer those two, and the reason they are no longer null. What is automatable was settled by probing Figma's published
+ * the only way to answer those two, and the reason they are no longer null —
+ * and `code.figma-connect` reads the repo's Code Connect mappings, which is
+ * where the code/design correspondence is actually written down. What is automatable was settled by probing Figma's published
  * OpenAPI spec (figma/rest-api-spec): `AnnotationsTrait` is declared with an
  * empty property bag, so the REST API exposes no accessibility annotations —
  * DE2 and the screenreader checks stay manual. `layoutMode`,
@@ -132,7 +144,14 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     category: 'code',
     subcategory: 'Quality',
     guideline: 'Composition mirrors Figma component',
-    check: null,
+    note: 'Answered from the repo’s Figma Code Connect mappings',
+    // Read from Code Connect, not from the two sides' shape: a
+    // `figma.connect(Button, "…?node-id=1-10")` call is the team's own
+    // statement that this code implements that node, and the audit can check
+    // it names the node being scored. DE11 asked the same question from the
+    // Figma side and was dropped: one claim, one norm, and this is the side
+    // where the evidence lives.
+    check: 'code.figma-connect',
   },
 
   // ---- Design (Figma) ----
@@ -189,13 +208,6 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     check: 'design.layer-names',
   },
   {
-    id: 'DE8',
-    category: 'design',
-    subcategory: 'Quality',
-    guideline: 'All layers, groups, and frames are necessary',
-    check: null,
-  },
-  {
     id: 'DE9',
     category: 'design',
     subcategory: 'Prototyping',
@@ -208,13 +220,6 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     subcategory: 'Quality',
     guideline: 'Component is built using Auto Layout',
     check: 'design.auto-layout',
-  },
-  {
-    id: 'DE11',
-    category: 'design',
-    subcategory: 'Quality',
-    guideline: "Figma component reflects what's in code",
-    check: null,
   },
 
   // ---- Documentation ----

@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_INTERACTION_STATES,
   DESIGN_CHECKS,
+  INTERACTION_STATES,
+  STATE_SYNONYMS,
   checkDocSection,
   extractHtmlHeadings,
   figmaPropertyNames,
   headingMatches,
   isDocsUrl,
+  statesNamed,
   type DocsFacts,
   type FigmaNode,
 } from '@usepolder/current-core';
@@ -277,10 +281,293 @@ describe('design.layer-names', () => {
   });
 });
 
+/** A VARIANT property definition, the shape the REST API declares. */
+function variant(options: string[], defaultValue = options[0]): Record<string, unknown> {
+  return { type: 'VARIANT', defaultValue, variantOptions: options };
+}
+
+/** A BOOLEAN property definition. */
+function boolean(defaultValue = false): Record<string, unknown> {
+  return { type: 'BOOLEAN', defaultValue };
+}
+
+describe('statesNamed', () => {
+  it('maps a variant option to its canonical state', () => {
+    expect(statesNamed('Hover')).toEqual(['hover']);
+    expect(statesNamed('Pressed')).toEqual(['pressed']);
+    expect(statesNamed('Disabled')).toEqual(['disabled']);
+  });
+
+  it('matches synonyms, case-insensitively', () => {
+    expect(statesNamed('HOVERED')).toEqual(['hover']);
+    expect(statesNamed('Active')).toEqual(['pressed']);
+    expect(statesNamed('Busy')).toEqual(['loading']);
+    expect(statesNamed('Checked')).toEqual(['selected']);
+    expect(statesNamed('Invalid')).toEqual(['error']);
+    expect(statesNamed('Focused')).toEqual(['focus']);
+  });
+
+  it('splits camelCase, separators and Figma’s key suffix', () => {
+    expect(statesNamed('isDisabled')).toEqual(['disabled']);
+    expect(statesNamed('Has Error')).toEqual(['error']);
+    expect(statesNamed('focus-visible')).toEqual(['focus']);
+    expect(statesNamed('Disabled#3:4')).toEqual(['disabled']);
+  });
+
+  it('names every state a compound value expresses', () => {
+    expect(statesNamed('Hover + Selected')).toEqual(['hover', 'selected']);
+  });
+
+  it('matches whole words only, never a substring', () => {
+    // The docs checks learned this: substring matching scored "Icon Usage" as
+    // usage guidelines. A variant option is too short a string to guess at.
+    expect(statesNamed('Pressure')).toEqual([]);
+    expect(statesNamed('Hovercraft')).toEqual([]);
+    expect(statesNamed('Terror')).toEqual([]);
+  });
+
+  it('does not read a tone, a direction, a visibility toggle or a badge status as a state', () => {
+    // Each of these would have produced a confident wrong answer on a
+    // component that models no interaction state at all.
+    expect(statesNamed('Danger')).toEqual([]);
+    expect(statesNamed('Destructive')).toEqual([]);
+    expect(statesNamed('Down')).toEqual([]);
+    expect(statesNamed('On')).toEqual([]);
+    expect(statesNamed('Pending')).toEqual([]);
+  });
+
+  it('does not treat the word "state" itself as naming a state', () => {
+    // A `State` property says there is a state axis, not which states exist.
+    expect(statesNamed('State')).toEqual([]);
+    expect(statesNamed('Default')).toEqual([]);
+  });
+
+  it('covers every canonical state in the synonym table', () => {
+    for (const state of INTERACTION_STATES) {
+      for (const synonym of STATE_SYNONYMS[state]) {
+        expect(statesNamed(synonym)).toContain(state);
+      }
+    }
+  });
+});
+
+describe('design.interaction-states', () => {
+  const check = DESIGN_CHECKS['design.interaction-states'];
+
+  it('defaults to hover, pressed and disabled — not all nine', () => {
+    expect([...DEFAULT_INTERACTION_STATES]).toEqual(['hover', 'pressed', 'disabled']);
+  });
+
+  it('answers Yes when a variant and a boolean between them cover every state asked for', () => {
+    const node = component({
+      type: 'COMPONENT_SET',
+      componentPropertyDefinitions: {
+        'Size#1:2': variant(['large', 'small']),
+        'State#2:3': variant(['Default', 'Hover', 'Pressed']),
+        'Disabled#3:4': boolean(),
+      },
+    });
+    const r = check({ componentName: 'B', node });
+    expect(r.answer).toBe('Yes');
+    expect(r.evidence).toBe('State variant covers hover, pressed; Disabled boolean covers disabled');
+  });
+
+  it('names which property expressed what, and ignores properties that express nothing', () => {
+    const node = component({
+      type: 'COMPONENT_SET',
+      componentPropertyDefinitions: {
+        'Tone#1:2': variant(['Neutral', 'Danger']),
+        'State#2:3': variant(['Default', 'Hover', 'Pressed', 'Disabled']),
+      },
+    });
+    const r = check({ componentName: 'B', node });
+    expect(r.answer).toBe('Yes');
+    expect(r.evidence).toBe('State variant covers hover, pressed, disabled');
+    expect(r.evidence).not.toContain('Tone');
+  });
+
+  it('answers No when some of the states asked for are there and some are not', () => {
+    const node = component({
+      type: 'COMPONENT_SET',
+      componentPropertyDefinitions: { 'State#1:2': variant(['Default', 'Hover']) },
+    });
+    const r = check({ componentName: 'B', node });
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('State variant covers hover');
+    expect(r.evidence).toContain('pressed, disabled');
+  });
+
+  it('reads a component that models state entirely as booleans', () => {
+    const node = component({
+      componentPropertyDefinitions: {
+        'Hovered#1:2': boolean(),
+        'Pressed#2:3': boolean(),
+        'Disabled#3:4': boolean(),
+      },
+    });
+    const r = check({ componentName: 'B', node });
+    expect(r.answer).toBe('Yes');
+    expect(r.evidence).toContain('Hovered boolean covers hover');
+    expect(r.evidence).toContain('Disabled boolean covers disabled');
+  });
+
+  it('reads property definitions on a COMPONENT, not only on a COMPONENT_SET', () => {
+    // `ComponentPropertiesTrait` is part of both node types in the spec.
+    const node = component({
+      type: 'COMPONENT',
+      componentPropertyDefinitions: {
+        'State#1:2': variant(['Default', 'Hover', 'Pressed']),
+        'Disabled#3:4': boolean(),
+      },
+    });
+    expect(check({ componentName: 'B', node }).answer).toBe('Yes');
+  });
+
+  it('answers N/A when nothing names an interaction state, and says what it inspected', () => {
+    const node = component({
+      type: 'COMPONENT_SET',
+      componentPropertyDefinitions: { 'Size#1:2': variant(['large', 'small']) },
+    });
+    const r = check({ componentName: 'B', node });
+    expect(r.answer).toBe('N/A');
+    expect(r.needsHuman).toBe(true);
+    expect(r.evidence).toContain('Size');
+    expect(r.evidence).toContain("human's call");
+  });
+
+  it('answers N/A for a component with no properties at all', () => {
+    const r = check({ componentName: 'B', node: component() });
+    expect(r.answer).toBe('N/A');
+    expect(r.needsHuman).toBe(true);
+    expect(r.evidence).toContain('declares no properties');
+  });
+
+  // A Badge with Status=Pending, Error, Success names a state by the words in
+  // the table while being a static label. Charging it for a missing hover
+  // state is exactly the No an N/A exists to prevent.
+  it('answers N/A, not No, when the only states named are ones nobody asked for', () => {
+    const node = component({
+      type: 'COMPONENT_SET',
+      componentPropertyDefinitions: { 'Status#1:2': variant(['Success', 'Error', 'Invalid']) },
+    });
+    const r = check({ componentName: 'B', node });
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('error');
+    expect(r.evidence).toContain('not asked for');
+  });
+
+  it('answers against the states a norm asked for', () => {
+    const node = component({
+      type: 'COMPONENT_SET',
+      componentPropertyDefinitions: { 'State#1:2': variant(['Default', 'Loading']) },
+    });
+    expect(check({ componentName: 'B', node }, { states: ['loading'] }).answer).toBe('Yes');
+    const r = check({ componentName: 'B', node }, { states: ['loading', 'error'] });
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('error');
+  });
+
+  it('falls back to variant child names when no property definitions came back', () => {
+    // `State=Hover, Size=Large` is a real convention and a documented-nowhere
+    // one, so an answer resting on it says which source answered.
+    const node = component({
+      type: 'COMPONENT_SET',
+      children: [
+        component({ id: '1:2', name: 'State=Default, Size=Large' }),
+        component({ id: '1:3', name: 'State=Hover, Size=Large' }),
+        component({ id: '1:4', name: 'State=Pressed, Size=Large' }),
+        component({ id: '1:5', name: 'State=Disabled, Size=Large' }),
+      ],
+    });
+    const r = check({ componentName: 'B', node });
+    expect(r.answer).toBe('Yes');
+    expect(r.evidence).toContain('variant child names covers hover, pressed, disabled');
+  });
+
+  it('prefers property definitions over child names when both are present', () => {
+    const node = component({
+      type: 'COMPONENT_SET',
+      componentPropertyDefinitions: { 'State#1:2': variant(['Default', 'Hover']) },
+      children: [component({ id: '1:3', name: 'State=Pressed' })],
+    });
+    const r = check({ componentName: 'B', node });
+    expect(r.answer).toBe('No');
+    expect(r.evidence).not.toContain('child names');
+  });
+
+  // The suffix is observed everywhere and documented nowhere, so a key
+  // without it has to work too.
+  it('reads a boolean key with no #id suffix', () => {
+    const node = component({
+      componentPropertyDefinitions: {
+        Hover: boolean(),
+        Pressed: boolean(),
+        Disabled: boolean(),
+      },
+    });
+    expect(check({ componentName: 'B', node }).answer).toBe('Yes');
+  });
+
+  // Guessing that an untyped `Disabled` key is a boolean would be inventing
+  // the one field that decides the answer.
+  it('does not read a key name off a property whose type the API did not report', () => {
+    const node = component({
+      componentPropertyDefinitions: { 'Disabled#3:4': {}, 'State#1:2': {} },
+    });
+    expect(check({ componentName: 'B', node }).answer).toBe('N/A');
+  });
+
+  it('does not read a TEXT or INSTANCE_SWAP property key as a state', () => {
+    const node = component({
+      componentPropertyDefinitions: {
+        'Error message#1:2': { type: 'TEXT', defaultValue: '' },
+        'Loading icon#2:3': { type: 'INSTANCE_SWAP', defaultValue: '1:9' },
+      },
+    });
+    expect(check({ componentName: 'B', node }, { states: ['error', 'loading'] }).answer).toBe('N/A');
+  });
+});
+
 describe('design.prototyping', () => {
   const check = DESIGN_CHECKS['design.prototyping'];
 
-  it('answers Yes for a component set with variant properties', () => {
+  it('answers Yes for a component set whose variant options name a state', () => {
+    const node = component({
+      type: 'COMPONENT_SET',
+      componentPropertyDefinitions: { 'State#1:2': variant(['Default', 'Hover']) },
+    });
+    const r = check({ componentName: 'B', node });
+    expect(r.answer).toBe('Yes');
+    expect(r.evidence).toContain('State');
+    expect(r.evidence).toContain('hover');
+  });
+
+  // The old check answered Yes for ANY component set, and printed "component
+  // set with 2 propert(ies): Size, Disabled" as its proof that interaction
+  // states were connected. Having variants is not having interaction states.
+  it('no longer answers Yes for a set whose only property is Size', () => {
+    const node = component({
+      type: 'COMPONENT_SET',
+      componentPropertyDefinitions: { 'Size#1:2': variant(['large', 'small']) },
+    });
+    const r = check({ componentName: 'B', node });
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('Size');
+    expect(r.evidence).toContain('no prototype interaction');
+  });
+
+  it('answers Yes for a set with a Disabled boolean and no wiring', () => {
+    const node = component({
+      type: 'COMPONENT_SET',
+      componentPropertyDefinitions: { 'Size#1:2': variant(['large']), 'Disabled#3:4': boolean() },
+    });
+    expect(check({ componentName: 'B', node }).answer).toBe('Yes');
+  });
+
+  // `variantOptions` is spec-declared but unobserved by this project on a
+  // live file. A `State` property with no values still says the component
+  // set is built as an Interactive Component.
+  it('accepts a property whose key is the state axis even with no values returned', () => {
     const node = component({
       type: 'COMPONENT_SET',
       componentPropertyDefinitions: { 'State#1:2': {} },
@@ -292,6 +579,33 @@ describe('design.prototyping', () => {
 
   it('answers Yes when a layer has a prototype transition', () => {
     const node = component({ children: [{ id: '1:2', name: 'Hit', type: 'FRAME', transitionNodeID: '1:9' }] });
+    expect(check({ componentName: 'B', node }).answer).toBe('Yes');
+  });
+
+  it('answers Yes on a hover or press trigger', () => {
+    for (const type of ['ON_HOVER', 'ON_PRESS', 'MOUSE_ENTER', 'ON_CLICK']) {
+      const node = component({
+        children: [{ id: '1:2', name: 'Hit', type: 'FRAME', interactions: [{ trigger: { type } }] }],
+      });
+      expect(check({ componentName: 'B', node }).answer).toBe('Yes');
+    }
+  });
+
+  it('does not count a timed or media trigger as an interaction state', () => {
+    const node = component({
+      children: [
+        { id: '1:2', name: 'Hit', type: 'FRAME', interactions: [{ trigger: { type: 'AFTER_TIMEOUT' } }] },
+      ],
+    });
+    expect(check({ componentName: 'B', node }).answer).toBe('No');
+  });
+
+  // "Figma reported an interaction we could not parse" is not "there are no
+  // interactions", so an unreadable trigger counts rather than costing a Yes.
+  it('counts an interaction whose trigger shape it cannot read', () => {
+    const node = component({
+      children: [{ id: '1:2', name: 'Hit', type: 'FRAME', interactions: [{}] }],
+    });
     expect(check({ componentName: 'B', node }).answer).toBe('Yes');
   });
 

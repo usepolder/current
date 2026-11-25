@@ -25,7 +25,7 @@ Runs on your machine or in your CI. No server, no account, no database, no telem
 
 ## What it scores
 
-30 checks across three categories — code, design, documentation — scored per component as `Yes / (Yes + No)`, with N/A excluded. 23 are checked automatically; the rest need a person, and Current reads those answers from a file you own rather than guessing.
+30 checks across three categories — code, design, documentation — scored per component as `Yes / (Yes + No)`, with N/A excluded. 25 are checked automatically; the rest need a person, and Current reads those answers from a file you own rather than guessing.
 
 Checks run against your real sources: the component's TypeScript (following its local imports), its Figma node, its Figma Code Connect mapping, and its documentation page — including hosted styleguides like ZeroHeight, which are rendered rather than fetched.
 

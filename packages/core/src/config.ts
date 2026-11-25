@@ -5,7 +5,14 @@ import { ConfigValidationError, ParseError, PathTraversalError } from './errors'
 import { CODE_CHECKS } from './code-checks';
 import { DEFAULT_BREAKPOINT_WIDTHS, LIVE_CHECKS, WIDTHS_KEY } from './live-checks';
 import { isPreviewUrl } from './live-source';
-import { DEFAULT_MIN_BOUND, DESIGN_CHECKS, MIN_BOUND_KEY } from './figma-checks';
+import {
+  DEFAULT_INTERACTION_STATES,
+  DEFAULT_MIN_BOUND,
+  DESIGN_CHECKS,
+  INTERACTION_STATES,
+  MIN_BOUND_KEY,
+  STATES_KEY,
+} from './figma-checks';
 import { CATEGORIES, DEFAULT_METRICS, type MetricCategory, type MetricDef } from './metrics';
 
 /** Bump when a change to the `current:` block would break configs in the wild. */
@@ -153,7 +160,8 @@ type ParamSpec =
   | null
   | { kind: 'strings'; key: 'headings' | 'text' }
   | { kind: 'percent'; key: typeof MIN_BOUND_KEY; default: number }
-  | { kind: 'widths'; key: typeof WIDTHS_KEY; default: readonly number[] };
+  | { kind: 'widths'; key: typeof WIDTHS_KEY; default: readonly number[] }
+  | { kind: 'states'; key: typeof STATES_KEY; default: readonly string[] };
 
 /** Yes requires this share of relevant layers to bind a token. */
 const MIN_BOUND_SPEC: ParamSpec = {
@@ -169,6 +177,16 @@ const WIDTHS_SPEC: ParamSpec = {
   default: DEFAULT_BREAKPOINT_WIDTHS,
 };
 
+/**
+ * Interaction states a DE6-style norm requires. Optional: there is a default,
+ * and it is deliberately not all of them.
+ */
+const STATES_SPEC: ParamSpec = {
+  kind: 'states',
+  key: STATES_KEY,
+  default: DEFAULT_INTERACTION_STATES,
+};
+
 /** The checks a norm may name, and the `params` each takes. */
 const CHECK_PARAM: Record<string, ParamSpec> = {
   ...Object.fromEntries(Object.keys(CODE_CHECKS).map((id) => [id, null])),
@@ -182,6 +200,7 @@ const CHECK_PARAM: Record<string, ParamSpec> = {
   'design.spacing-tokens': MIN_BOUND_SPEC,
   'design.radius-tokens': MIN_BOUND_SPEC,
   'code.breakpoints': WIDTHS_SPEC,
+  'design.interaction-states': STATES_SPEC,
 };
 
 /** A check only sees its own source, so its id has to match the axis it scores. */
@@ -290,6 +309,38 @@ function parseCheck(
     }
     const widths = [...new Set(list as number[])].sort((a, b) => a - b);
     return { check, params: { [spec.key]: widths } };
+  }
+
+  if (spec.kind === 'states') {
+    // Optional, like `percent` and `widths`: the check ships a default set.
+    if (entry.params === undefined) return { check };
+    const params = entry.params;
+    const list = isPlainObject(params) ? params[spec.key] : undefined;
+    const named =
+      Array.isArray(list) && list.every((x) => typeof x === 'string')
+        ? (list as string[]).map((x) => x.trim().toLowerCase())
+        : null;
+    if (
+      !isPlainObject(params) ||
+      Object.keys(params).some((k) => k !== spec.key) ||
+      named === null ||
+      named.length === 0 ||
+      !named.every((x) => INTERACTION_STATES.includes(x))
+    ) {
+      throw new ConfigValidationError(
+        `${where}: check "${check}" takes params: { ${spec.key}: [one or more of ` +
+          `${INTERACTION_STATES.join(', ')}] }. Default ${spec.default.join(', ')}. ` +
+          'Ask for the states your components actually need: most legitimately need only ' +
+          'some of the nine the guideline lists, so requiring all of them reports a No on ' +
+          'nearly every component. "default" is not one of them — every component has a ' +
+          'resting appearance — and "active" is scored as "pressed", the name the code-side ' +
+          'norm uses for the same claim.',
+      );
+    }
+    // Normalised to the canonical order so the evidence line reads in the
+    // order the guideline lists the states, whatever order the config used.
+    const states = INTERACTION_STATES.filter((s) => named.includes(s));
+    return { check, params: { [spec.key]: states } };
   }
 
   const params = entry.params;

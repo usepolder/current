@@ -540,3 +540,63 @@ metrics:
     ).toThrow(/cannot score a design norm/);
   });
 });
+
+describe('design.interaction-states states', () => {
+  function withStates(states: string): string {
+    return polder(`
+components:
+  Button:
+    figma: "1:10"
+metrics:
+  override:
+    DE6:
+      params: { states: ${states} }
+`);
+  }
+
+  it('takes no params by default, and DE6 is automated', () => {
+    const de6 = parseConfig(polder(MINIMAL)).metrics.find((m) => m.id === 'DE6');
+    expect(de6?.check).toBe('design.interaction-states');
+    expect(de6?.params).toBeUndefined();
+  });
+
+  it('accepts a configured set, lowercased, deduped and in the guideline’s order', () => {
+    const c = parseConfig(withStates('[Disabled, hover, HOVER, focus]'));
+    expect(c.metrics.find((m) => m.id === 'DE6')?.params).toEqual({
+      states: ['hover', 'focus', 'disabled'],
+    });
+  });
+
+  it('does not change the rubric fingerprint when a state list is merely reordered', () => {
+    const a = parseConfig(withStates('[hover, disabled]'));
+    const b = parseConfig(withStates('[disabled, hover]'));
+    expect(metricKeys(a.metrics)).toEqual(metricKeys(b.metrics));
+  });
+
+  it('rejects anything that is not a known state', () => {
+    for (const states of ['[]', '[wiggling]', '[1]', '"hover"', '[default]', '[danger]']) {
+      expect(() => parseConfig(withStates(states))).toThrow(ConfigValidationError);
+    }
+  });
+
+  it('says what the default is and why asking for all of them is wrong', () => {
+    expect(() => parseConfig(withStates('[everything]'))).toThrow(
+      /Default hover, pressed, disabled/,
+    );
+    expect(() => parseConfig(withStates('[everything]'))).toThrow(/only\s+some of the nine/);
+  });
+
+  it('rejects an unrelated key alongside it', () => {
+    expect(() =>
+      parseConfig(polder(`
+components:
+  Button:
+    figma: "1:10"
+metrics:
+  override:
+    DE6:
+      params: { states: [hover], min_bound: 50 }
+`)),
+    ).toThrow(ConfigValidationError);
+  });
+});

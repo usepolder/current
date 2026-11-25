@@ -163,6 +163,21 @@ describe('scanRepo — end to end against a fixture design system', () => {
     expect(wrapper.metrics.find((m) => m.metricId === 'DE7')?.answer).toBe('No');
   });
 
+  it('answers DE6 from the fixture\u2019s variant options and boolean property', async () => {
+    const report = await scanFixture();
+    const button = byName(report, 'Button').metrics.find((m) => m.metricId === 'DE6');
+    expect(button).toMatchObject({ answer: 'Yes', source: 'auto' });
+    expect(button!.evidence).toContain('State variant covers hover, pressed');
+    expect(button!.evidence).toContain('Disabled boolean covers disabled');
+
+    // Wrapper declares no properties. The API cannot tell a wrapper that
+    // needs no interaction states from one that forgot them, so the norm
+    // stays unanswered rather than becoming a No or a settled N/A.
+    const wrapper = byName(report, 'Wrapper').metrics.find((m) => m.metricId === 'DE6');
+    expect(wrapper).toMatchObject({ answer: 'N/A', source: 'unanswered' });
+    expect(wrapper!.evidence).toContain("human's call");
+  });
+
   it('detects the fixture\u2019s real code facts', async () => {
     const button = byName(await scanFixture(), 'Button');
     expect(button.metrics.find((m) => m.metricId === 'CO2')?.answer).toBe('Yes');

@@ -194,6 +194,317 @@ export function checkRadiusTokens(facts: DesignFacts, params?: Params): CheckRes
   });
 }
 
+/**
+ * The interaction states DE6 can recognise, and the words a design system
+ * might use for each one.
+ *
+ * Keys are the canonical names a `params: { states: [...] }` list is written
+ * in. DE6's guideline lists nine states; this table holds seven, because
+ * "default" is not a state a component can be missing (every component has a
+ * resting appearance) and "active" is folded into "pressed", which is the
+ * name CO1 uses for the same claim on the code side.
+ *
+ * Synonyms are an explicit list, never a prefix or substring match. The docs
+ * checks learned this the hard way: substring matching scored Button's "Icon
+ * Usage" as usage guidelines. A variant option is a short string with no
+ * grammar to lean on, so the only safe rule is equality against a word.
+ *
+ * Four words that name a state in some systems are deliberately NOT here,
+ * because in a Figma file they far more often name something else:
+ *
+ *   - "danger" and "destructive" name a colour tone. `Tone=Danger` on a
+ *     Button is not an error state. Same lesson as DO7 refusing a bare
+ *     "tone" heading.
+ *   - "down" names a direction. `Icon=Down`, `Chevron=Down`.
+ *   - "on" names visibility. `Icon=On` means the icon is shown, not that the
+ *     component is selected.
+ *   - "pending" names a status. A Badge with `Status=Pending` is displaying
+ *     someone else's state, not reacting to a pointer.
+ *
+ * Each of those would have produced a confident wrong answer on a component
+ * that models no interaction state at all, which is the one thing DE6 must
+ * not do.
+ */
+export const STATE_SYNONYMS: Readonly<Record<string, readonly string[]>> = {
+  hover: ['hover', 'hovered'],
+  pressed: ['pressed', 'press', 'active'],
+  focus: ['focus', 'focused'],
+  disabled: ['disabled', 'disable'],
+  loading: ['loading', 'busy'],
+  selected: ['selected', 'checked', 'toggled'],
+  error: ['error', 'invalid'],
+};
+
+/**
+ * Canonical state names. The order is the order evidence lines list them in,
+ * and the order a configured `states` list is normalised to, so two configs
+ * naming the same set read identically in a report.
+ */
+export const INTERACTION_STATES: readonly string[] = Object.keys(STATE_SYNONYMS);
+
+/**
+ * The states DE6 asks for when a norm names none.
+ *
+ * Three, not all seven. Most components legitimately need only some of the
+ * states the guideline lists — a Divider needs none, a Badge needs none, a
+ * Tooltip needs none — and asking for all of them would report a No on
+ * nearly every component in a healthy system. These three are the ones any
+ * component a pointer can act on has to have: it responds to the pointer, it
+ * responds to the press, and it can be turned off.
+ *
+ * Focus is not among them on purpose. In Figma a focus ring is very often a
+ * shared overlay or an annotation rather than a variant, so requiring a
+ * `Focus` option would report a No on systems that do have one. Focus is also
+ * the one state of the three a browser can force, so CO1 already reports it
+ * from the side where it is actually visible. A team that models focus as a
+ * variant can add it: `params: { states: [hover, pressed, focus, disabled] }`.
+ */
+export const DEFAULT_INTERACTION_STATES: readonly string[] = ['hover', 'pressed', 'disabled'];
+
+/** The params key a DE6-style norm names its states with. */
+export const STATES_KEY = 'states';
+
+/** `states` off a norm's params, or the default. Validated in config.ts. */
+function statesFrom(params?: Params): readonly string[] {
+  const raw = params?.[STATES_KEY];
+  if (!Array.isArray(raw) || raw.length === 0) return DEFAULT_INTERACTION_STATES;
+  const named = raw.filter((x): x is string => typeof x === 'string');
+  return named.length === 0 ? DEFAULT_INTERACTION_STATES : named;
+}
+
+/**
+ * The words in a Figma name, for matching against `STATE_SYNONYMS`.
+ *
+ * Drops the `#1:2` suffix Figma puts on property keys — observed on every
+ * real file this project has seen, documented nowhere in the OpenAPI spec,
+ * so it is stripped when present and never required. Splits camelCase so
+ * `isDisabled` yields `disabled`, and splits on everything that is not a
+ * letter or digit so `State=Hover`, `focus-visible` and `Has Error` all come
+ * apart into words.
+ */
+function nameWords(name: string): string[] {
+  return name
+    .split('#')[0]
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w !== '');
+}
+
+/** Every canonical state this one name expresses, case-insensitively. */
+export function statesNamed(name: string): string[] {
+  const words = nameWords(name);
+  return INTERACTION_STATES.filter((state) =>
+    words.some((w) => STATE_SYNONYMS[state].includes(w)),
+  );
+}
+
+/** Where a state was found, for evidence. */
+interface StateSource {
+  state: string;
+  /** How this source reads in the evidence line, e.g. `State variant`. */
+  label: string;
+}
+
+function propertyType(def: unknown): string | null {
+  if (typeof def !== 'object' || def === null) return null;
+  const type = (def as { type?: unknown }).type;
+  return typeof type === 'string' ? type : null;
+}
+
+function variantOptions(def: unknown): string[] | null {
+  if (typeof def !== 'object' || def === null) return null;
+  const opts = (def as { variantOptions?: unknown }).variantOptions;
+  if (!Array.isArray(opts)) return null;
+  return opts.filter((x): x is string => typeof x === 'string');
+}
+
+/** `COMPONENT` and `COMPONENT_SET` nodes in the subtree — the ones that can declare properties. */
+function propertyHolders(node: FigmaNode): FigmaNode[] {
+  return flatten(node).filter((n) => n.type === 'COMPONENT' || n.type === 'COMPONENT_SET');
+}
+
+/**
+ * Every interaction state the component's declared properties express.
+ *
+ * Two sources, both read off `componentPropertyDefinitions`:
+ *
+ *   - a `VARIANT` property's `variantOptions`, which is the list of values
+ *     that property can take, so a `State` variant hands over
+ *     `["Default", "Hover", "Pressed"]` directly;
+ *   - a `BOOLEAN` property's key name, because `Disabled` and `Loading` are
+ *     routinely modelled as booleans rather than as variant options.
+ *
+ * `TEXT`, `INSTANCE_SWAP` and `SLOT` properties are ignored: their names
+ * describe content, not state. A property whose `type` the API did not
+ * report is read only if it carries `variantOptions` — guessing that an
+ * untyped `Disabled` key is a boolean would be inventing the one field that
+ * decides the answer.
+ */
+function declaredStates(node: FigmaNode): StateSource[] {
+  const out: StateSource[] = [];
+  const seen = new Set<string>();
+  const add = (state: string, label: string): void => {
+    const key = `${state}\u0000${label}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ state, label });
+  };
+
+  for (const holder of propertyHolders(node)) {
+    for (const [rawKey, def] of Object.entries(holder.componentPropertyDefinitions ?? {})) {
+      const key = rawKey.split('#')[0];
+      const type = propertyType(def);
+      const options = variantOptions(def);
+
+      if (options !== null) {
+        for (const option of options) {
+          for (const state of statesNamed(option)) add(state, `${key} variant`);
+        }
+        continue;
+      }
+      if (type === 'BOOLEAN') {
+        for (const state of statesNamed(key)) add(state, `${key} boolean`);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * States read off variant child names — `State=Hover, Size=Large`.
+ *
+ * A fallback, used only when the property definitions expressed nothing.
+ * This naming convention is real and stable in practice but appears nowhere
+ * in Figma's published OpenAPI spec, and there is no `variantProperties`
+ * field to read instead, so an answer resting on it says so in its evidence.
+ */
+function childNameStates(node: FigmaNode): StateSource[] {
+  if (node.type !== 'COMPONENT_SET') return [];
+  const out: StateSource[] = [];
+  const seen = new Set<string>();
+  for (const child of node.children ?? []) {
+    for (const pair of child.name.split(',')) {
+      const value = pair.includes('=') ? pair.slice(pair.indexOf('=') + 1) : '';
+      for (const state of statesNamed(value)) {
+        if (seen.has(state)) continue;
+        seen.add(state);
+        out.push({ state, label: 'variant child names' });
+      }
+    }
+  }
+  return out;
+}
+
+/** `hover, pressed via the State variant; disabled via the Disabled boolean` → grouped by source. */
+function describeSources(sources: StateSource[]): string {
+  const byLabel = new Map<string, string[]>();
+  for (const { state, label } of sources) {
+    const states = byLabel.get(label) ?? [];
+    if (!states.includes(state)) states.push(state);
+    byLabel.set(label, states);
+  }
+  return [...byLabel]
+    .map(([label, states]) => `${label} covers ${states.join(', ')}`)
+    .join('; ');
+}
+
+/** Property keys the node declares, for the evidence of an N/A. */
+function declaredPropertyNames(node: FigmaNode): string[] {
+  const names: string[] = [];
+  for (const holder of propertyHolders(node)) {
+    for (const key of Object.keys(holder.componentPropertyDefinitions ?? {})) {
+      const name = key.split('#')[0];
+      if (!names.includes(name)) names.push(name);
+    }
+  }
+  return names;
+}
+
+/**
+ * DE6 — the component declares the interaction states it is asked for.
+ *
+ * The mirror of CO1, and worth stating why they are not the same question.
+ * CO1 forces `:hover` and `:hover:active` on a rendered element and watches
+ * what changes; it can prove a state is MISSING but never that the set is
+ * complete, because six of the nine states it lists cannot be reached from
+ * one URL. Figma is the other way round: a component set *declares* its
+ * states as variant options, so the set is enumerable and a complete one can
+ * be confirmed. That is why DE6 can answer Yes where CO1 structurally
+ * cannot, and why DE6 is read off property definitions rather than pixels.
+ *
+ * What this check will NOT claim:
+ *
+ *   - That the states LOOK right. A `State=Hover` variant identical to
+ *     `State=Default` satisfies DE6 and should fail CO1. DE6 reads the
+ *     declaration; the browser probe reads the rendering, and neither
+ *     substitutes for the other.
+ *   - That a component expressing no interaction state is wrong. That is the
+ *     N/A below, and it is the whole reason this norm was manual: the API
+ *     cannot tell a Divider from a Button that forgot its hover state, and
+ *     *which* states a given component needs is most of what DE6 is really
+ *     asking. So "nothing here names an interaction state" stays a human's
+ *     call, flagged `needsHuman` so it keeps its place in the questions
+ *     `current export` writes out.
+ *   - That a component is wired up. DE6 asks whether the states exist; DE9
+ *     asks whether they are connected, and reads prototype interactions that
+ *     DE6 deliberately ignores. A hover trigger is DE9's evidence, not this
+ *     check's.
+ *
+ * A No needs at least one of the REQUESTED states present. "It models some
+ * interaction state" is not enough on its own: a Badge with
+ * `Status=Pending, Error, Success` names two states by this table's words
+ * while being a static label, and charging it for a missing hover state
+ * would be exactly the No that an N/A exists to prevent. Partial coverage of
+ * what was asked for is the confident finding — a component already in the
+ * business of having hover states, without the pressed state beside it.
+ */
+export function checkInteractionStates(facts: DesignFacts, params?: Params): CheckResult {
+  const wanted = statesFrom(params);
+  const declared = declaredStates(facts.node);
+  const sources = declared.length > 0 ? declared : childNameStates(facts.node);
+  const expressed = new Set(sources.map((s) => s.state));
+
+  const missing = wanted.filter((s) => !expressed.has(s));
+  const covered = wanted.filter((s) => expressed.has(s));
+
+  if (missing.length === 0) {
+    return {
+      answer: 'Yes',
+      evidence: describeSources(sources.filter((s) => wanted.includes(s.state))),
+    };
+  }
+
+  if (covered.length > 0) {
+    return {
+      answer: 'No',
+      evidence:
+        `${describeSources(sources.filter((s) => covered.includes(s.state)))}, but no variant ` +
+        `option or boolean property names ${missing.join(', ')}`,
+    };
+  }
+
+  // Nothing asked for was found. Say what WAS there, so the reader can see
+  // whether the component models state at all or simply has none.
+  const others = [...expressed];
+  const properties = declaredPropertyNames(facts.node);
+  const inspected =
+    properties.length > 0
+      ? `propert(ies) declared: ${properties.join(', ')}`
+      : facts.node.type === 'COMPONENT_SET'
+        ? 'the component set declares no properties'
+        : 'the component declares no properties';
+  const aside =
+    others.length > 0 ? `; it names ${others.join(', ')}, which was not asked for` : '';
+  return {
+    answer: 'N/A',
+    evidence:
+      `nothing names ${wanted.join(', ')} (${inspected}${aside}) — whether this component ` +
+      "needs interaction states is a human's call",
+    needsHuman: true,
+  };
+}
+
 const DEFAULT_LAYER_NAME =
   /^(frame|group|rectangle|ellipse|vector|line|polygon|star|slice|component|instance|union|subtract|intersect|exclude)(\s+\d+)?$/i;
 
@@ -216,28 +527,148 @@ export function checkLayerNames(facts: DesignFacts): CheckResult {
   };
 }
 
-/** DE9 — interaction states connected, or built as an interactive component set. */
+/**
+ * Prototype triggers that mean an interaction state is wired to something.
+ *
+ * Spec-declared `Trigger.type` values, minus the ones that fire without a
+ * user acting on the component: `AFTER_TIMEOUT`, `ON_MEDIA_HIT` and
+ * `ON_MEDIA_END` are animation timing, not interaction state.
+ */
+const INTERACTION_TRIGGERS: readonly string[] = [
+  'ON_CLICK',
+  'ON_HOVER',
+  'ON_PRESS',
+  'ON_DRAG',
+  'MOUSE_ENTER',
+  'MOUSE_LEAVE',
+  'MOUSE_UP',
+  'MOUSE_DOWN',
+  'ON_KEY_DOWN',
+];
+
+/**
+ * Does this `interactions` entry respond to a user?
+ *
+ * Lenient about a shape it cannot read: an entry whose `trigger.type` is
+ * absent or not a string counts, because "Figma reported an interaction we
+ * could not parse" is not "this component has no interactions". Only a
+ * trigger that is legible AND outside `INTERACTION_TRIGGERS` is excluded.
+ */
+function isInteractionTrigger(entry: unknown): boolean {
+  if (typeof entry !== 'object' || entry === null) return true;
+  const trigger = (entry as { trigger?: unknown }).trigger;
+  if (typeof trigger !== 'object' || trigger === null) return true;
+  const type = (trigger as { type?: unknown }).type;
+  if (typeof type !== 'string') return true;
+  return INTERACTION_TRIGGERS.includes(type);
+}
+
+/**
+ * Words a property KEY uses to say "this property is the interaction state",
+ * without saying which state.
+ *
+ * DE9 only. `State` as a key is strong evidence a component set is built as
+ * an Interactive Component, and it survives an API response that omits
+ * `variantOptions` — which matters, because those options are spec-declared
+ * but unobserved by this project so far. DE6 cannot use this: "there is a
+ * State property" is not "it covers pressed", and DE6's whole job is to say
+ * which states are there.
+ */
+const STATE_PROPERTY_WORDS: readonly string[] = ['state', 'states', 'interaction'];
+
+/** Property keys that name the interaction-state axis itself, e.g. `State`. */
+function statePropertyKeys(node: FigmaNode): string[] {
+  const out: string[] = [];
+  for (const holder of propertyHolders(node)) {
+    for (const rawKey of Object.keys(holder.componentPropertyDefinitions ?? {})) {
+      const key = rawKey.split('#')[0];
+      if (out.includes(key)) continue;
+      if (nameWords(key).some((w) => STATE_PROPERTY_WORDS.includes(w))) out.push(key);
+    }
+  }
+  return out;
+}
+
+/** Layers in the subtree wired to a prototype destination by a user action. */
+function wiredLayers(node: FigmaNode): FigmaNode[] {
+  return flatten(node).filter(
+    (n) =>
+      (typeof n.transitionNodeID === 'string' && n.transitionNodeID !== '') ||
+      (Array.isArray(n.interactions) && n.interactions.some(isInteractionTrigger)),
+  );
+}
+
+/**
+ * DE9 — interaction states are connected, or the component is built as an
+ * interactive component set.
+ *
+ * This used to answer Yes for ANY `COMPONENT_SET`, which made the guideline's
+ * "interaction states" half unenforced: a set whose only property was `Size`
+ * satisfied the norm, and printed `component set with 2 propert(ies): Size,
+ * Disabled` as its proof that interaction states were connected. Having
+ * variants is not having interaction states. Yes now needs one of the two
+ * things the guideline actually names — a variant option or boolean property
+ * that names an interaction state (Figma's Interactive Components are built
+ * out of exactly those), or a prototype interaction a user can trigger. A
+ * property whose KEY is the state axis, `State` with no values returned,
+ * also counts: see `STATE_PROPERTY_WORDS`.
+ *
+ * DE9 is not DE6 asked twice. DE6 scores WHICH states a component declares,
+ * against the list a team asked for, and reads nothing but property
+ * definitions. DE9 scores whether the component is interactive AT ALL, and a
+ * single state anywhere settles it — as does prototype wiring, or a bare
+ * `State` property, neither of which DE6 will look at. They separate on the
+ * components that matter: a Size-only set with a hover interaction is DE9
+ * Yes and DE6 N/A; a set with `State=Default, Hover` and nothing else is DE6
+ * No (no pressed, no disabled) and DE9 Yes. On a well-built set both read
+ * the same field and both answer Yes, which is two different claims that
+ * happen to agree, not one claim scored twice.
+ *
+ * The N/A for a component with no Figma node is upstream, in the scan: a
+ * node that was never fetched is "we could not look", and this check is only
+ * ever called with one in hand.
+ */
 export function checkPrototyping(facts: DesignFacts): CheckResult {
-  const nodes = flatten(facts.node);
-  if (facts.node.type === 'COMPONENT_SET') {
-    const variants = Object.keys(facts.node.componentPropertyDefinitions ?? {});
+  const declared = declaredStates(facts.node);
+  const states = declared.length > 0 ? declared : childNameStates(facts.node);
+  const wired = wiredLayers(facts.node);
+
+  if (states.length > 0) {
+    const named = [...new Set(states.map((s) => s.state))];
+    const wiring = wired.length > 0 ? `, and ${wired.length} layer(s) wired` : '';
+    return {
+      answer: 'Yes',
+      evidence: `${describeSources(states)} — interaction state(s) ${named.join(', ')} declared${wiring}`,
+    };
+  }
+
+  if (wired.length > 0) {
+    return {
+      answer: 'Yes',
+      evidence: `${wired.length} layer(s) have prototype interactions wired`,
+    };
+  }
+
+  // No readable state value, but a property whose name IS the state axis.
+  // Enough for "contains Interactive Components"; not enough for DE6.
+  const stateProps = statePropertyKeys(facts.node);
+  if (stateProps.length > 0) {
     return {
       answer: 'Yes',
       evidence:
-        variants.length > 0
-          ? `component set with ${variants.length} propert(ies): ${variants
-              .map((v) => v.split('#')[0])
-              .join(', ')}`
-          : 'component set with variants',
+        `propert(ies) ${stateProps.join(', ')} name the interaction-state axis, though the ` +
+        'API returned no values for them',
     };
   }
-  const wired = nodes.filter(
-    (n) =>
-      (typeof n.transitionNodeID === 'string' && n.transitionNodeID !== '') ||
-      (Array.isArray(n.interactions) && n.interactions.length > 0),
-  );
-  if (wired.length > 0) {
-    return { answer: 'Yes', evidence: `${wired.length} layer(s) have prototype interactions wired` };
+
+  const properties = declaredPropertyNames(facts.node);
+  if (properties.length > 0) {
+    return {
+      answer: 'No',
+      evidence:
+        `no propert(y) names an interaction state and no prototype interaction is wired ` +
+        `(declared: ${properties.join(', ')})`,
+    };
   }
   return {
     answer: 'No',
@@ -287,6 +718,7 @@ export const DESIGN_CHECKS: Record<string, DesignCheck> = {
   'design.type-tokens': checkTypeTokens,
   'design.spacing-tokens': checkSpacingTokens,
   'design.radius-tokens': checkRadiusTokens,
+  'design.interaction-states': checkInteractionStates,
   'design.layer-names': checkLayerNames,
   'design.prototyping': checkPrototyping,
   'design.auto-layout': checkAutoLayout,

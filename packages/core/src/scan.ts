@@ -1,8 +1,16 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { lookupAnswer, type AnswerBook } from './answers';
-import { CODE_CHECKS, type CheckResult, type CodeFacts } from './code-checks';
-import { resolveComponentPaths, type CurrentConfig } from './config';
+import { CODE_CHECKS, type CheckResult, type CodeConnectFacts, type CodeFacts } from './code-checks';
+import {
+  CODE_CONNECT_CONFIG,
+  extractCodeConnect,
+  indexCodeConnect,
+  mappingFor,
+  normaliseNodeId,
+  type CodeConnectIndex,
+} from './code-connect';
+import { resolveComponentPaths, type ComponentMapping, type CurrentConfig } from './config';
 import { checkDocSection, extractHeadings, extractHtmlHeadings, type DocsFacts } from './docs-checks';
 import {
   isDocsUrl,
@@ -107,6 +115,8 @@ interface LoadedComponent {
   probeAbsence: LiveAbsence | null;
   probeAbsenceDetail?: string;
   figmaNode: FigmaNode | null;
+  /** The Code Connect side, or null when no norm asked for it. */
+  codeConnect: CodeConnectFacts | null;
 }
 
 /**
@@ -179,6 +189,19 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
     });
   }
 
+  // Walked once, and only when a norm actually asks: the walk touches the
+  // whole repo, and a config that scores no Code Connect norm should not pay
+  // for it. See code-connect.ts for why this is read from the repo.
+  const codeConnect = config.metrics.some((m) => m.check === 'code.figma-connect')
+    ? indexCodeConnect(repoRoot)
+    : null;
+  if (codeConnect !== null) {
+    logger.trace(
+      `code connect: ${codeConnect.mappings.length} mapping(s) in ${codeConnect.fileCount} file(s)` +
+        (codeConnect.hasConfig ? `, ${CODE_CONNECT_CONFIG} present` : ''),
+    );
+  }
+
   const loaded: LoadedComponent[] = [];
   for (const mapping of config.components) {
     const paths = resolvedPaths.get(mapping.name)!;
@@ -203,6 +226,19 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
       logger.trace(`${mapping.name}: code file missing at ${mapping.code}`);
     }
 
+    const connect =
+      codeConnect === null
+        ? null
+        : codeConnectFacts({
+            index: codeConnect,
+            mapping,
+            figmaFileKey: config.figmaFileKey,
+            codePath: paths.code,
+            ast,
+            repoRoot,
+            logger,
+          });
+
     const docs = loadDocs(mapping.name, paths.docs, opts, docsPages, logger);
     const live = loadPreview(mapping.name, mapping.preview, opts, previews, logger);
 
@@ -221,6 +257,7 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
       probeAbsence: live.absence,
       probeAbsenceDetail: live.detail,
       figmaNode: mapping.figma === null ? null : figmaNodes.get(mapping.figma) ?? null,
+      codeConnect: connect,
     });
   }
 
@@ -275,6 +312,47 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
     usage,
     totals,
     quadrantCounts: countQuadrants(components),
+  };
+}
+
+/**
+ * Assemble the Code Connect side of one component.
+ *
+ * The component's own entry file is searched alongside the repo's `*.figma.*`
+ * files: a single mapping often lives next to the component it maps rather
+ * than in a file of its own, and a mapping found there is no less published
+ * than one found elsewhere.
+ */
+function codeConnectFacts(args: {
+  index: CodeConnectIndex;
+  mapping: ComponentMapping;
+  figmaFileKey: string | null;
+  codePath: string | null;
+  ast: Ast | null;
+  repoRoot: string;
+  logger: Logger;
+}): CodeConnectFacts {
+  const { index, mapping, ast, codePath } = args;
+  const inline =
+    ast === null || codePath === null
+      ? []
+      : extractCodeConnect(ast, path.relative(args.repoRoot, codePath).split(path.sep).join('/'));
+
+  const all = [...inline, ...index.mappings];
+  const found = mappingFor(all, mapping.name);
+  if (found !== null) {
+    args.logger.trace(
+      `${mapping.name}: code connect — ${found.filePath} → ${found.nodeId ?? 'no node id'}`,
+    );
+  }
+
+  return {
+    mapping: found,
+    usesCodeConnect: all.length > 0 || index.hasConfig,
+    fileCount: index.fileCount,
+    mappingCount: all.length,
+    expectedNodeId: mapping.figma === null ? null : normaliseNodeId(mapping.figma),
+    expectedFileKey: args.figmaFileKey,
   };
 }
 
@@ -454,6 +532,7 @@ function scoreComponent(
           ast: c.ast,
           figmaPropertyNames: c.figmaNode === null ? null : figmaPropertyNames(c.figmaNode),
           ...(c.related === null ? {} : { related: c.related }),
+          ...(c.codeConnect === null ? {} : { codeConnect: c.codeConnect }),
         };
 
   const designFacts: DesignFacts | null =

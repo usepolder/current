@@ -1,4 +1,5 @@
 import type * as t from '@babel/types';
+import { CODE_CONNECT_CONFIG, type CodeConnectMapping } from './code-connect';
 import type { Ast } from './parse';
 import type { Answer } from './metrics';
 import type { RelatedFiles } from './related-files';
@@ -40,6 +41,27 @@ export interface CodeFacts {
    * directory). Absent means only the entry file was available.
    */
   related?: RelatedFiles;
+  /**
+   * What the repo's Figma Code Connect mappings say about this component.
+   * Absent means they were never looked for — no norm asked.
+   */
+  codeConnect?: CodeConnectFacts;
+}
+
+/** The Code Connect side of one component, assembled by the scan. */
+export interface CodeConnectFacts {
+  /** The mapping covering this component, or null when none was found. */
+  mapping: CodeConnectMapping | null;
+  /** Whether the repo uses Code Connect at all: mappings, or a figma.config.json. */
+  usesCodeConnect: boolean;
+  /** Code Connect files read, for the evidence line when nothing matched. */
+  fileCount: number;
+  /** Mappings found across them, including any in the component's own file. */
+  mappingCount: number;
+  /** The Figma node `.polder.yml` maps this component to, when it maps one. */
+  expectedNodeId: string | null;
+  /** The Figma file `.polder.yml` points the audit at, when it names one. */
+  expectedFileKey: string | null;
 }
 
 const ICONISH = /(^|[^a-z])icon$|^icon/i;
@@ -463,6 +485,83 @@ export function checkFigmaPropParity(facts: CodeFacts): CheckResult {
   };
 }
 
+/**
+ * CO12 — does the code say which Figma component it implements, and is it the
+ * one this audit scores?
+ *
+ * Answered from Figma Code Connect, which is the only place a team states
+ * that correspondence in a form a machine can read (see code-connect.ts for
+ * why it is read from the repo rather than from the API).
+ *
+ * N/A, never No, for a repo with no Code Connect at all. Code Connect needs a
+ * paid Figma plan and a publish step, so "this team does not use it" and
+ * "this component is missing its mapping" are different findings, and
+ * scoring the first as No would tank the code axis of every component in
+ * every system that has not bought it. Current says what it looked at and
+ * leaves the norm to a human instead.
+ */
+export function checkFigmaConnect(facts: CodeFacts): CheckResult {
+  const cc = facts.codeConnect;
+  if (cc === undefined) {
+    return { answer: 'N/A', evidence: 'Code Connect mappings were not read on this run' };
+  }
+  if (!cc.usesCodeConnect) {
+    return {
+      answer: 'N/A',
+      evidence:
+        'no Code Connect in this repo — no *.figma.* mapping files and no figma.config.json. ' +
+        'Wire it up with Figma’s `figma connect` CLI, or answer this norm by hand',
+    };
+  }
+
+  const m = cc.mapping;
+  if (m === null && cc.mappingCount === 0) {
+    // The repo says it uses Code Connect and Current found no call to read.
+    // That is a search that came up empty, not a verdict on the component:
+    // mappings reached by a custom `codeConnect.include` glob live wherever
+    // the glob says, and this looks by filename.
+    return {
+      answer: 'N/A',
+      evidence:
+        `${CODE_CONNECT_CONFIG} is present but no figma.connect() call was found — ` +
+        'mappings are located by the *.figma.* filename convention, not by codeConnect.include globs',
+    };
+  }
+  if (m === null) {
+    return {
+      answer: 'No',
+      evidence: `no figma.connect() names ${facts.componentName} among ${cc.mappingCount} mapping(s) in ${cc.fileCount} Code Connect file(s)`,
+    };
+  }
+
+  const props = m.props.length === 0 ? '' : ` with ${m.props.length} prop(s) mapped`;
+
+  if (m.nodeId === null) {
+    return {
+      answer: 'No',
+      evidence: `${m.filePath} connects ${facts.componentName} to ${m.url}, which names no node — that is a file, not a component`,
+    };
+  }
+  if (cc.expectedNodeId !== null && m.nodeId !== cc.expectedNodeId) {
+    return {
+      answer: 'No',
+      evidence: `${m.filePath} connects ${facts.componentName} to node ${m.nodeId}, but .polder.yml maps it to ${cc.expectedNodeId}`,
+    };
+  }
+  if (cc.expectedFileKey !== null && m.fileKey !== null && m.fileKey !== cc.expectedFileKey) {
+    return {
+      answer: 'No',
+      evidence: `${m.filePath} connects ${facts.componentName} to a node in Figma file ${m.fileKey}, not the audited ${cc.expectedFileKey}`,
+    };
+  }
+
+  const scored = cc.expectedNodeId === null ? '' : ' — the node this audit scores';
+  return {
+    answer: 'Yes',
+    evidence: `${m.filePath} connects ${facts.componentName} to node ${m.nodeId}${props}${scored}`,
+  };
+}
+
 /** A check reads the component's facts, plus the `params` its norm configured. */
 export type CodeCheck = (facts: CodeFacts, params?: Record<string, unknown>) => CheckResult;
 
@@ -572,4 +671,5 @@ export const CODE_CHECKS: Record<string, CodeCheck> = {
   'code.token-usage': checkTokenUsage,
   'code.semantic-name': checkSemanticName,
   'code.figma-prop-parity': checkFigmaPropParity,
+  'code.figma-connect': checkFigmaConnect,
 };

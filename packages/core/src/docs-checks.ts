@@ -45,18 +45,34 @@ export function extractHtmlHeadings(html: string): string[] {
 }
 
 /**
- * A heading satisfies a metric when it STARTS with one of the synonyms, on a
- * word boundary.
+ * Real docs often head one section with two topics, e.g. "Behaviour / States"
+ * or "Content & tone". Each side of such a separator is its own topic, so a
+ * heading is matched segment by segment.
+ */
+function headingSegments(heading: string): string[] {
+  return heading
+    .split(/\s*(?:[/|&+,;•·—–]|\band\b|\bor\b)\s*/i)
+    .map((part) => part.trim())
+    .filter((part) => part !== '');
+}
+
+/**
+ * A heading satisfies a metric when one of its segments STARTS with one of the
+ * synonyms, on a word boundary.
  *
  * Start-anchored on purpose. A plain substring test let Button's "Icon Usage"
  * satisfy "usage guidelines are documented", which it does not — that section
  * is about icons, not about when to use the component. Requiring the synonym
- * at the front keeps "Usage", "Usage guidelines" and "When to use" while
- * dropping "Icon Usage".
+ * at the front of a segment keeps "Usage", "Usage guidelines", "When to use"
+ * and "Behaviour / States" while dropping "Icon Usage".
  */
 export function headingMatches(heading: string, needle: string): boolean {
-  const h = heading.toLowerCase().trim();
   const n = needle.toLowerCase().trim();
+  return headingSegments(heading).some((segment) => segmentMatches(segment, n));
+}
+
+function segmentMatches(segment: string, n: string): boolean {
+  const h = segment.toLowerCase().trim();
   if (!h.startsWith(n)) return false;
   // Tolerate a plural: real docs head a section "Variants" while the synonym
   // list says "variant". "Stateful" still fails, because the next character

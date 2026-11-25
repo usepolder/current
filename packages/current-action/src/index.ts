@@ -160,22 +160,32 @@ async function run(): Promise<void> {
   // PR runs read history; they never write it.
   const previous = lastEntry(readHistory(workdir));
   const baseScore = previous?.overall ?? null;
-  if (previous !== null && previous.metricsHash !== undefined) {
-    const currentHash = entryFromReport(report, metricKeys(config.metrics)).metricsHash;
-    if (previous.metricsHash !== currentHash) {
-      core.warning(
-        'Current: the rubric changed since the last recorded scan — a norm was added, ' +
-          'removed, re-tuned or flipped between manual and automated, or Current itself was ' +
-          'upgraded to check something differently. The delta compares two different rubrics, ' +
-          'so treat it as a reset, not a regression.',
-      );
-    }
+  // An entry recorded before fingerprinting existed has no hash to compare,
+  // and absence is not a mismatch: it says nothing either way, so the delta
+  // stands.
+  const rubricChanged =
+    previous !== null &&
+    previous.metricsHash !== undefined &&
+    previous.metricsHash !== entryFromReport(report, metricKeys(config.metrics)).metricsHash;
+  if (rubricChanged) {
+    core.warning(
+      'Current: the rubric changed since the last recorded scan — a norm was added, ' +
+        'removed, re-tuned or flipped between manual and automated, or Current itself was ' +
+        'upgraded to check something differently. The delta compares two different rubrics, ' +
+        'so treat it as a reset, not a regression.',
+    );
   }
 
+  // The warning above goes to the run log. The comment is what people read,
+  // so it has to carry the same caveat — otherwise a changed rubric reports
+  // "no change vs `main`", which is a comparison presented as continuous
+  // across two different measurements. That is the thing the fingerprint
+  // exists to prevent.
   const body = renderComment(
     report,
     baseScore,
     (pr?.base?.ref as string | undefined) ?? null,
+    rubricChanged,
   );
 
   try {

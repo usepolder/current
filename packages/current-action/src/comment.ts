@@ -34,18 +34,42 @@ function fmt(value: number | null): string {
   return value === null ? '—' : `${value.toFixed(1)}%`;
 }
 
-function deltaLine(score: number, baseScore: number, baseRef: string | null): string {
-  const delta = Math.round((score - baseScore) * 10) / 10;
+/**
+ * The figure beside the overall score.
+ *
+ * A changed rubric SUPPRESSES the delta rather than annotating it. The two
+ * numbers were produced by different sets of norms, so their difference is
+ * not a movement in quality — and "no change vs `main`" is the worst of the
+ * three to print, because it reads as reassurance when nothing is being
+ * compared. The run log already carries a warning; nobody reads the log of a
+ * green run, and this is the line people do read.
+ */
+function deltaLine(
+  score: number,
+  baseScore: number,
+  baseRef: string | null,
+  rubricChanged: boolean,
+): string {
   const vs = baseRef ? `vs \`${baseRef}\`` : 'vs base';
+  if (rubricChanged) return `⚠️ rubric changed — not comparable ${vs}`;
+  const delta = Math.round((score - baseScore) * 10) / 10;
   if (delta > 0) return `▲ +${delta.toFixed(1)} pts ${vs}`;
   if (delta < 0) return `▼ ${delta.toFixed(1)} pts ${vs}`;
   return `no change ${vs}`;
 }
 
+/** Said once, under the score, when the delta was suppressed. */
+const RUBRIC_CHANGED_NOTE =
+  'The rubric changed in this branch — a norm was added, removed, re-tuned, or flipped ' +
+  'between manual and automated (or Current itself now checks one differently). The two ' +
+  'scores measure different things, so this is a reset of the trend line, not a regression.';
+
 export function renderComment(
   report: CurrentReport,
   baseScore: number | null,
   baseRef: string | null,
+  /** The metric set no longer matches the entry `baseScore` came from. */
+  rubricChanged = false,
 ): string {
   const t = report.totals;
   const q = report.quadrantCounts;
@@ -56,12 +80,18 @@ export function renderComment(
     return lines.join('\n');
   }
 
-  const delta =
-    baseScore !== null && t.overall !== null
-      ? `   ${deltaLine(t.overall, baseScore, baseRef)}`
-      : '';
+  // No baseline (or no score) means no claim is made either way, and a note
+  // about comparability would be answering a question nobody asked.
+  const comparing = baseScore !== null && t.overall !== null;
+  const delta = comparing
+    ? `   ${deltaLine(t.overall as number, baseScore as number, baseRef, rubricChanged)}`
+    : '';
   lines.push(`**Overall: ${fmt(t.overall)}**${delta}`);
   lines.push('');
+  if (comparing && rubricChanged) {
+    lines.push(RUBRIC_CHANGED_NOTE);
+    lines.push('');
+  }
   lines.push('| | Code | Design | Docs |');
   lines.push('| --- | ---: | ---: | ---: |');
   lines.push(`| Score | ${fmt(t.code)} | ${fmt(t.design)} | ${fmt(t.documentation)} |`);

@@ -9,11 +9,16 @@ Revisiting one is cheap. Each entry says what would have to change first.
 
 ## Validating the automated checks against something other than ourselves
 
-25 of the 30 metrics are automated, and nothing independent has ever confirmed
+25 of the 28 metrics are automated, and nothing independent has ever confirmed
 that any of them agrees with a human. The dogfood answers file covers the
 *manual* metrics, deliberately — so it cannot double as ground truth for the
 automated ones. The README now states the confidence per axis rather than
-implying the whole score is measured (code 9/12, design 8/9, docs 8/9).
+implying the whole score is measured (code 9/11, design 8/9, docs 8/8).
+
+#36 is what looking rather than validating turns up: DE1, DE4 and DE5 were
+scoring Figma's own component-set chrome as raw values, answering No on
+components whose every shipped layer bound a token. One bug, found by reading
+the checks. Nothing says it is the only one.
 
 Closed as #4. Not reopened as a task, because it is not a coding task: it needs
 a design system with both public source and an independent human audit of the
@@ -58,6 +63,27 @@ with no common ancestor means every mirror is a hand-merge, and a hand-merge
 into a repo that holds client data is exactly where that data leaks back out.
 
 Revisit only if something in the archive needs to run, rather than be kept.
+
+## i18n key coverage, orphaned by CO11
+
+CO11 ("component is usable in all supported languages") was dropped from the
+rubric in #31: it is language testing, it belongs to the design process, and
+its own note conceded it could "only be checked in production".
+
+Removing it orphans one thing that *was* automatable. Checking that every i18n
+key a component references resolves in the translation catalogue is a real,
+static, answerable claim — `i18n-unused` and friends already do it — and
+unlike CO11 it can be answered where the audit runs.
+
+It does not get a metric on the strength of being adjacent to one that was
+deleted. Two things would have to change first: a way to discover the
+catalogue's location from `.polder.yml` without adding a config key for it
+(every new key is a thing an adopter has to learn and a thing this project has
+to keep), and someone actually asking for it. A missing-key check nobody
+requested would be a norm scoring every adopter on a concern they never
+raised, which is precisely what DO1 was.
+
+Not an issue. An issue implies intent to do.
 
 ## Small polish
 

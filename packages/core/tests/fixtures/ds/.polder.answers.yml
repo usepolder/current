@@ -4,9 +4,7 @@ Button:
   CO4: Yes
   CO6: Yes
   CO10: Yes
-  CO11: "N/A"
   DE2: Yes
-  DO1: Yes
 Wrapper:
   CO1: No
   CO3: No

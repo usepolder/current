@@ -2,6 +2,7 @@ import * as yaml from 'js-yaml';
 import {
   ConfigValidationError,
   CurrentError,
+  NO_MANUAL_ANSWER,
   coerceAnswer,
   type Answer,
   type CurrentReport,
@@ -51,6 +52,13 @@ export function buildExportRows(report: CurrentReport): ExportRow[] {
 
     for (const m of component.metrics) {
       if (m.source !== 'unanswered') continue;
+      // A norm a check looked at and could not settle (CO1) carries that
+      // check's own finding, and it is the single most useful thing on the
+      // row — so it leads, ahead of the rest of the axis.
+      const own =
+        m.evidence !== null && m.evidence !== NO_MANUAL_ANSWER
+          ? [`${m.metricId} ${m.answer}: ${m.evidence}`]
+          : [];
       rows.push({
         component: component.name,
         metric: m.metricId,
@@ -58,7 +66,7 @@ export function buildExportRows(report: CurrentReport): ExportRow[] {
         subcategory: m.subcategory,
         guideline: m.guideline,
         answer: '',
-        evidence: (automatedByAxis.get(m.category) ?? []).join(' | '),
+        evidence: [...own, ...(automatedByAxis.get(m.category) ?? [])].join(' | '),
       });
     }
   }

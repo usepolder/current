@@ -10,7 +10,7 @@ import {
   run,
   toCsv,
 } from '../src/index';
-import { parseAnswers, type CurrentReport } from '@usepolder/current-core';
+import { NO_MANUAL_ANSWER, parseAnswers, type CurrentReport } from '@usepolder/current-core';
 
 const FIXTURE = path.join(__dirname, '..', '..', 'core', 'tests', 'fixtures', 'ds');
 const temps: string[] = [];
@@ -108,6 +108,31 @@ describe('buildExportRows', () => {
       report([metric('CO1', 'unanswered'), metric('CO2', 'auto'), metric('CO3', 'manual')]),
     );
     expect(rows.map((r) => r.metric)).toEqual(['CO1']);
+  });
+
+  /**
+   * CO1's probe cannot settle the norm, so the row still goes to a person —
+   * and what the probe DID see is the most useful thing on that row, so it
+   * leads. A plain manual norm has no finding to show, only the note saying
+   * nobody has answered it, which would be noise in a CSV cell.
+   */
+  it('leads with the row\'s own finding when a check looked and could not settle it', () => {
+    const rows = buildExportRows(
+      report([
+        metric('CO1', 'unanswered', 'code', 'hover and pressed are visible on all 2 control(s)'),
+        metric('CO2', 'auto', 'code', 'none found', 'Yes'),
+      ]),
+    );
+    expect(rows[0].evidence).toBe(
+      'CO1 N/A: hover and pressed are visible on all 2 control(s) | CO2 Yes: none found',
+    );
+  });
+
+  it('leaves the note on an unanswered manual norm out of the evidence', () => {
+    const rows = buildExportRows(
+      report([metric('CO10', 'unanswered', 'code', NO_MANUAL_ANSWER), metric('CO2', 'auto', 'code', 'none found', 'Yes')]),
+    );
+    expect(rows[0].evidence).toBe('CO2 Yes: none found');
   });
 
   // The point of the feature: the reviewer sees what the machine worked out.

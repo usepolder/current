@@ -122,6 +122,19 @@ describe('scanRepo — end to end against a fixture design system', () => {
     expect(co1).toMatchObject({ answer: 'Yes', source: 'manual' });
   });
 
+  /**
+   * CO1's probe can prove a missing hover, pressed or focus state; it cannot
+   * prove a complete set. So an unmapped (or clean) preview leaves the norm
+   * where it started — waiting for a person — rather than quietly booking it
+   * as an automated N/A and dropping it out of the questions to answer.
+   */
+  it('leaves a norm its check could not settle as unanswered, with the evidence', async () => {
+    const ghost = byName(await scanFixture(), 'Ghost');
+    const co1 = ghost.metrics.find((m) => m.metricId === 'CO1');
+    expect(co1).toMatchObject({ answer: 'N/A', source: 'unanswered' });
+    expect(co1?.evidence).toContain('no preview URL mapped');
+  });
+
   it('records evidence for every automated answer', async () => {
     const button = byName(await scanFixture(), 'Button');
     const auto = button.metrics.filter((m) => m.source === 'auto');

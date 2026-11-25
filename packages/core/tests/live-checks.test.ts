@@ -10,8 +10,11 @@ import {
   type LiveFacts,
   type LiveProbe,
   CONTRAST_INSTALL_HINT,
+  REAL_SCREEN_READERS,
+  SCREEN_READER_DRIVERS,
   TEXT_EXPANSION_RATIO,
   parseAnnouncement,
+  requestedDriver,
   toClassicScript,
   type ContrastFinding,
   type ContrastProbe,
@@ -467,7 +470,7 @@ describe('code.states (CO1)', () => {
 describe('code.screenreader (CO4)', () => {
   // The headline claim: this check can prove a component is NOT
   // screen-reader accessible, and cannot prove it is.
-  it('never answers Yes, even on a flawless read', () => {
+  it('never answers Yes on the virtual driver, even on a flawless read', () => {
     const r = screenreader(
       facts({
         probe: probe({
@@ -491,7 +494,8 @@ describe('code.screenreader (CO4)', () => {
     );
     expect(r.answer).toBe('N/A');
     expect(r.needsHuman).toBe(true);
-    expect(r.evidence).toContain('announce a role and a name');
+    expect(r.evidence).toContain('found a role and a name');
+    expect(r.evidence).toContain('needs real assistive technology');
   });
 
   it('answers No for an interactive element with no accessible name', () => {
@@ -983,5 +987,116 @@ describe('code.contrast (CO13)', () => {
 
   it('names the engine in its install hint', () => {
     expect(CONTRAST_INSTALL_HINT).toContain('accessibility-checker-engine');
+  });
+});
+
+/**
+ * #33: real assistive technology as a second driver behind the SAME check id.
+ * Two checks scoring one claim is the duplication #29 spent its time
+ * unwinding, so there is one `code.screenreader` and two ways to answer it.
+ *
+ * None of this could be exercised against real assistive technology: it needs
+ * macOS, Windows, or a Linux desktop session with AT-SPI, and the work was
+ * done on a headless Linux container. What IS covered is everything around
+ * the driver — the platform gate, the fall-back, the messages and the verdict
+ * — and the one thing measured directly on this machine is that `detect()`
+ * can return true where `start()` then fails, which is why the gate checks
+ * both.
+ */
+describe('code.screenreader drivers (CO4, #33)', () => {
+  function corroborated(verifiedBy: 'voiceover' | 'nvda' | 'orca'): LiveFacts {
+    return facts({
+      probe: probe({
+        interactiveCount: 2,
+        screenReader: reader({
+          verifiedBy,
+          stops: [
+            heard(),
+            heard({ tag: 'a', phrase: 'link, Docs', spokenRole: 'link', name: 'Docs' }),
+          ],
+        }),
+      }),
+    });
+  }
+
+  // The only path to a Yes in this whole check.
+  it.each(['voiceover', 'nvda', 'orca'] as const)(
+    'answers Yes once %s has walked the same page',
+    (verifiedBy) => {
+      const r = screenreader(corroborated(verifiedBy));
+      expect(r.answer).toBe('Yes');
+      expect(r.needsHuman).toBeUndefined();
+    },
+  );
+
+  it('names the real reader that earned the Yes', () => {
+    expect(screenreader(corroborated('nvda')).evidence).toContain('NVDA');
+    expect(screenreader(corroborated('voiceover')).evidence).toContain('VoiceOver');
+    expect(screenreader(corroborated('orca')).evidence).toContain('Orca');
+  });
+
+  // Corroboration raises the ceiling on the clean case. It excuses nothing:
+  // the findings still come from the virtual reader and still outrank it.
+  it('still answers No when a finding stands, however it was corroborated', () => {
+    const r = screenreader(
+      facts({
+        probe: probe({
+          screenReader: reader({
+            verifiedBy: 'nvda',
+            stops: [heard({ phrase: 'button', name: '' })],
+          }),
+        }),
+      }),
+    );
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('no accessible name');
+  });
+
+  // Asking for real AT where there is none must not cost the metric.
+  it('falls back to the virtual reader and says why', () => {
+    const r = screenreader(
+      facts({
+        probe: probe({
+          screenReader: reader({
+            fallbackReason: 'orca would not start: Orca is not installed',
+          }),
+        }),
+      }),
+    );
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('a real screen reader was asked for and');
+    expect(r.evidence).toContain('Orca is not installed');
+    expect(r.needsHuman).toBe(true);
+  });
+
+  it('says nothing about a fallback when none was asked for', () => {
+    expect(screenreader(facts()).evidence).not.toContain('was asked for');
+  });
+
+  it('lists exactly the real readers as real', () => {
+    expect([...REAL_SCREEN_READERS].sort()).toEqual(['nvda', 'orca', 'voiceover']);
+    expect(REAL_SCREEN_READERS).not.toContain('virtual');
+  });
+});
+
+describe('requestedDriver', () => {
+  it('defaults to the virtual reader, which runs anywhere', () => {
+    expect(requestedDriver()).toBe('virtual');
+    expect(requestedDriver({})).toBe('virtual');
+  });
+
+  it('takes "real" when a norm asks for it', () => {
+    expect(requestedDriver({ driver: 'real' })).toBe('real');
+  });
+
+  // Config validation rejects anything else, so this is the belt to that
+  // brace: an unexpected value must not silently mean "real".
+  it('treats anything else as virtual', () => {
+    expect(requestedDriver({ driver: 'nvda' })).toBe('virtual');
+    expect(requestedDriver({ driver: 7 })).toBe('virtual');
+  });
+
+  it('offers exactly two choices, neither of them a reader name', () => {
+    expect(SCREEN_READER_DRIVERS).toEqual(['virtual', 'real']);
   });
 });

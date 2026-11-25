@@ -64,6 +64,32 @@ into a repo that holds client data is exactly where that data leaks back out.
 
 Revisit only if something in the archive needs to run, rather than be kept.
 
+## A real screen reader on a hosted runner
+
+CO4's `driver: real` corroborates a clean read with VoiceOver, NVDA or Orca,
+and is the only way the norm answers Yes. It cannot run on a GitHub-hosted
+runner, and the reason is not the one #33 assumed: guidepup 0.40 does have a
+Linux driver (Orca), so "no Linux support" is out of date. What it needs is a
+**desktop session** — a visible, frontmost browser window and, on Linux,
+AT-SPI running — because real assistive technology reads the focused window of
+the machine it is on rather than a page handed to it.
+
+So this is for a developer's own machine or a dedicated self-hosted runner,
+which is why it is off by default and why the Action does not fetch
+`@guidepup/guidepup` on demand the way it fetches the browser.
+
+Revisit if a hosted runner ever ships a desktop session, or if someone stands
+up a self-hosted one and wants the ceiling raised across their whole system.
+Until then the virtual driver is what travels, and the gap between the two is
+reported rather than hidden: the evidence always names what produced the
+answer.
+
+**Not verified against real assistive technology.** The driver, the platform
+gate, the fall-back and the verdict are all covered, but no VoiceOver, NVDA or
+Orca run has ever been observed — this was built on a headless Linux
+container. What those readers do when they actually start is the one part of
+this that nobody has watched.
+
 ## Contrast in the Figma design (DE2)
 
 DE2 is the last manual norm in the default set, and #35 established that it

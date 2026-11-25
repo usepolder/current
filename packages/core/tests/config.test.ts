@@ -363,6 +363,38 @@ describe('customising the norms', () => {
     rejects('override:\n  DE7: { params: { min_bound: 90 } }', /takes no params/);
   });
 
+  // `driver` picks which screen reader answers CO4. Optional, and the default
+  // is the one that runs anywhere, so most adopters never set it.
+  it('accepts a screen-reader driver and normalises its case', () => {
+    expect(
+      metrics(indent('override:\n  CO4: { params: { driver: real } }')).find((m) => m.id === 'CO4')
+        ?.params,
+    ).toEqual({ driver: 'real' });
+    expect(
+      metrics(indent('override:\n  CO4: { params: { driver: REAL } }')).find((m) => m.id === 'CO4')
+        ?.params,
+    ).toEqual({ driver: 'real' });
+    expect(
+      metrics(indent('override:\n  CO4: { guideline: g }')).find((m) => m.id === 'CO4')?.params,
+    ).toBeUndefined();
+  });
+
+  // Naming a specific reader would be unanswerable on every other platform,
+  // and which reader to use is the machine's business rather than the rubric's.
+  it('refuses a driver that names a reader instead of a kind', () => {
+    const bad = (v: string) => rejects(`override:\n  CO4: { params: { driver: ${v} } }`, /driver/);
+    bad('nvda');
+    bad('voiceover');
+    bad('orca');
+    bad('"true"');
+    bad('7');
+    rejects('override:\n  CO4: { params: { driver: real, widths: [320] } }', /driver/);
+  });
+
+  it('refuses a driver on a check that does not pick a reader', () => {
+    rejects('override:\n  CO3: { params: { driver: real } }', /takes no params/);
+  });
+
   it('refuses to override an unknown id, pointing at custom instead', () => {
     rejects('override:\n  ZZ9: { guideline: g }', /not a built-in metric.*metrics\.custom/);
   });

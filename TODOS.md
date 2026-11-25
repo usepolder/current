@@ -9,11 +9,11 @@ Revisiting one is cheap. Each entry says what would have to change first.
 
 ## Validating the automated checks against something other than ourselves
 
-23 of the 30 metrics are automated, and nothing independent has ever confirmed
+24 of the 30 metrics are automated, and nothing independent has ever confirmed
 that any of them agrees with a human. The dogfood answers file covers the
 *manual* metrics, deliberately — so it cannot double as ground truth for the
 automated ones. The README now states the confidence per axis rather than
-implying the whole score is measured (code 8/12, design 7/9, docs 8/9).
+implying the whole score is measured (code 9/12, design 7/9, docs 8/9).
 
 Closed as #4. Not reopened as a task, because it is not a coding task: it needs
 a design system with both public source and an independent human audit of the

@@ -10,14 +10,29 @@ import {
   type LiveFacts,
   type LiveProbe,
   type PageProber,
+  type StateProbe,
   type ViewportProbe,
 } from '@usepolder/current-core';
 
 const keyboard = LIVE_CHECKS['code.keyboard'];
 const breakpoints = LIVE_CHECKS['code.breakpoints'];
+const states = LIVE_CHECKS['code.states'];
 
 function stop(overrides: Partial<FocusStop> = {}): FocusStop {
   return { tag: 'button', role: null, name: 'Save', focusVisible: true, native: true, ...overrides };
+}
+
+function state(overrides: Partial<StateProbe> = {}): StateProbe {
+  return {
+    tag: 'button',
+    role: null,
+    name: 'Save',
+    hover: true,
+    pressed: true,
+    focus: true,
+    formField: false,
+    ...overrides,
+  };
 }
 
 function viewport(width: number, overrides: Partial<ViewportProbe> = {}): ViewportProbe {
@@ -39,6 +54,7 @@ function probe(overrides: Partial<LiveProbe> = {}): LiveProbe {
     focusStops: [stop()],
     unreachable: [],
     viewports: DEFAULT_BREAKPOINT_WIDTHS.map((w) => viewport(w)),
+    states: [state()],
     ...overrides,
   };
 }
@@ -240,5 +256,146 @@ describe('probeLivePages', () => {
     };
     await probeLivePages(['http://a/1'], prober, [320, 1280]);
     expect(seen).toEqual([[320, 1280]]);
+  });
+});
+
+describe('code.states (CO1)', () => {
+  /**
+   * The headline decision: a clean probe is never a Yes. Three of the nine
+   * states this metric lists can be forced on a rendered element; the other
+   * six need the component driven through its props, so "nothing missing in
+   * what we could force" must not read as "all necessary states present".
+   */
+  it('answers N/A, not Yes, when every measurable state is visible', () => {
+    const r = states(facts());
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('hover and pressed are visible on all 1 control(s)');
+    expect(r.evidence).toContain('loading, selected, active, error, disabled');
+  });
+
+  it('answers No when a control looks identical on hover', () => {
+    const r = states(
+      facts({
+        probe: probe({
+          interactiveCount: 2,
+          states: [state(), state({ name: 'Cancel', hover: false })],
+        }),
+      }),
+    );
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('1 of 2 control(s) look identical on hover');
+    expect(r.evidence).toContain('"Cancel"');
+  });
+
+  it('answers No when a control looks identical while pressed', () => {
+    const r = states(facts({ probe: probe({ states: [state({ pressed: false })] }) }));
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('identical while pressed');
+  });
+
+  /** Hover is the worse absence, so it is the one reported. */
+  it('reports the missing hover state ahead of the missing pressed state', () => {
+    const r = states(
+      facts({ probe: probe({ states: [state({ hover: false, pressed: false })] }) }),
+    );
+    expect(r.evidence).toContain('identical on hover');
+    expect(r.evidence).not.toContain('pressed');
+  });
+
+  it('answers No when a probed element shows no focus state', () => {
+    const r = states(facts({ probe: probe({ states: [state({ focus: false })] }) }));
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('no focus state (WCAG 2.4.7)');
+  });
+
+  /** Unreachable is CO3's finding. Charging CO1 for it too would double-bill. */
+  it('does not fail an element the Tab walk never reached', () => {
+    const r = states(facts({ probe: probe({ states: [state({ focus: null })] }) }));
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).not.toContain('focus');
+  });
+
+  /**
+   * A native text box has no hover style and does not need one — the platform
+   * styles it and it signals by focusing. Judging it on hover would report a
+   * No on every form in the system.
+   */
+  it('judges native form fields on focus alone', () => {
+    const r = states(
+      facts({
+        probe: probe({
+          states: [state({ tag: 'input', name: '', hover: false, pressed: false, formField: true })],
+        }),
+      }),
+    );
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('native form fields, judged on focus alone');
+  });
+
+  it('still fails a form field with no focus state', () => {
+    const r = states(
+      facts({
+        probe: probe({
+          states: [state({ tag: 'input', hover: false, pressed: false, formField: true, focus: false })],
+        }),
+      }),
+    );
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('no focus state');
+  });
+
+  it('answers N/A when the renderer could not force pseudo-states', () => {
+    const r = states(facts({ probe: probe({ states: null }) }));
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('could not force :hover / :active');
+  });
+
+  it('answers N/A when the preview renders nothing interactive', () => {
+    const r = states(facts({ probe: probe({ interactiveCount: 0, states: [] }) }));
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('no interactive elements');
+  });
+
+  it('answers N/A when there are interactive elements but none could be measured', () => {
+    const r = states(facts({ probe: probe({ interactiveCount: 3, states: [] }) }));
+    expect(r.answer).toBe('N/A');
+    expect(r.evidence).toContain('none of the 3 interactive element(s)');
+  });
+
+  it('answers N/A with the reason when there is no probe at all', () => {
+    expect(states(facts({ probe: null, absence: 'unmapped' })).answer).toBe('N/A');
+    expect(states(facts({ probe: null, absence: 'no-prober' })).evidence).toContain('playwright');
+    expect(
+      states(facts({ probe: null, absence: 'unreachable', absenceDetail: 'net::ERR' })).evidence,
+    ).toContain('net::ERR');
+  });
+
+  /**
+   * The flag that keeps CO1 in the to-answer list: every N/A this check can
+   * return means "could not settle", except the one for a preview with
+   * nothing interactive in it, which is settled.
+   */
+  it('marks its unsettled answers as still needing a human', () => {
+    expect(states(facts()).needsHuman).toBe(true);
+    expect(states(facts({ probe: probe({ states: null }) })).needsHuman).toBe(true);
+    expect(states(facts({ probe: probe({ interactiveCount: 3, states: [] }) })).needsHuman).toBe(
+      true,
+    );
+    expect(states(facts({ probe: null, absence: 'unmapped' })).needsHuman).toBe(true);
+    // A settled N/A and a finding are both the machine's to keep.
+    expect(
+      states(facts({ probe: probe({ interactiveCount: 0, states: [] }) })).needsHuman,
+    ).toBeUndefined();
+    expect(
+      states(facts({ probe: probe({ states: [state({ hover: false })] }) })).needsHuman,
+    ).toBeUndefined();
+  });
+
+  it('caps the elements it names in the evidence', () => {
+    const many = Array.from({ length: 9 }, (_, i) => state({ name: `B${i}`, hover: false }));
+    const r = states(facts({ probe: probe({ interactiveCount: 9, states: many }) }));
+    expect(r.evidence).toContain('9 of 9');
+    expect(r.evidence).toContain('"B4"');
+    expect(r.evidence).not.toContain('"B5"');
   });
 });

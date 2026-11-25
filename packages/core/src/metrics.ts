@@ -16,11 +16,12 @@
  *
  * `check` is the id of an automated check, or null when only a human can
  * answer. Four input contracts are in play: static checks read the
- * component's source, design checks read its Figma node, `code.keyboard`
- * / `code.breakpoints` probe a rendered `preview:` URL in a real browser —
- * the only way to answer those two, and the reason they are no longer null —
- * and `code.figma-connect` reads the repo's Code Connect mappings, which is
- * where the code/design correspondence is actually written down. What is automatable was settled by probing Figma's published
+ * component's source, design checks read its Figma node, `code.keyboard` /
+ * `code.breakpoints` / `code.states` probe a rendered `preview:` URL in a
+ * real browser — the only way to answer those three, and the reason they are
+ * no longer null — and `code.figma-connect` reads the repo's Code Connect
+ * mappings, which is where the code/design correspondence is actually
+ * written down. What is automatable was settled by probing Figma's published
  * OpenAPI spec (figma/rest-api-spec): `AnnotationsTrait` is declared with an
  * empty property bag, so the REST API exposes no accessibility annotations —
  * DE2 and the screenreader checks stay manual. `layoutMode`,
@@ -53,7 +54,15 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     subcategory: 'A11y',
     guideline: 'Component encompasses and displays all necessary interaction states',
     note: 'Default, hover, pressed, focus, loading, selected, active, error, disabled',
-    check: null,
+    // "Displays" is a visual claim, and the rules behind it usually sit in a
+    // stylesheet, a utility-class string or a wrapped primitive, so the
+    // component's own source cannot answer it. A rendered `preview:` can:
+    // hover, pressed and focus are forced on each interactive element and
+    // compared with its resting style. The other six states need the
+    // component driven through its props, and *which* states are "necessary"
+    // is the judgment the metric is really asking for — so a clean probe is
+    // an N/A, never a Yes. It can prove a missing state, not a complete set.
+    check: 'code.states',
   },
   {
     id: 'CO2',

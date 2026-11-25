@@ -383,7 +383,9 @@ describe('metricKeys', () => {
     // Every key names its metric and encodes its category + check + params.
     expect(keys.every((k) => k.includes(':'))).toBe(true);
     expect(keys.find((k) => k.startsWith('CO3:'))).toContain('code.keyboard');
-    expect(keys.find((k) => k.startsWith('CO1:'))).toContain('null');
+    expect(keys.find((k) => k.startsWith('CO1:'))).toContain('code.states');
+    // A norm only a human can answer carries a null check, and says so.
+    expect(keys.find((k) => k.startsWith('CO10:'))).toContain('"code",null');
   });
 
   /**

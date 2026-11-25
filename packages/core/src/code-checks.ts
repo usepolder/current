@@ -16,6 +16,16 @@ export interface CheckResult {
   answer: Answer;
   /** One line explaining what the check looked at. Printed by --verbose. */
   evidence: string;
+  /**
+   * Set by a check whose `N/A` means "I could not settle this", on a norm no
+   * check can settle on its own — CO1 is the one in the default set, because
+   * six of the nine states it lists are out of a preview's reach. The scan
+   * reports those as *unanswered* rather than automated, so they keep their
+   * place in the report's to-answer list and in `--export`'s CSV, with the
+   * check's own finding as the explanation. An `N/A` without this flag is a
+   * settled "does not apply", and a `No` is a finding: neither wants a human.
+   */
+  needsHuman?: boolean;
 }
 
 /** Everything a code-side check can look at. */

@@ -59,6 +59,14 @@ import type { UsageMap } from './usage';
  */
 const FIGMA_UNAVAILABLE = 'Figma unavailable — design metrics not evaluated';
 
+/**
+ * The evidence on a manual norm nobody has answered yet. Exported so a
+ * consumer can tell it from a norm that *was* looked at and still needs a
+ * person — a probe that could not settle CO1 leaves its own finding here
+ * instead, and that one is worth showing (see `CheckResult.needsHuman`).
+ */
+export const NO_MANUAL_ANSWER = 'manual metric with no answer in .polder.answers.yml';
+
 export interface ScanOptions {
   repoRoot: string;
   config: CurrentConfig;
@@ -478,9 +486,11 @@ function loadPreview(
     logger.trace(`${component}: preview probe failed — ${probed.error}`);
     return { probe: null, absence: 'unreachable', detail: probed.error };
   }
+  const states = probed.probe.states;
   logger.trace(
     `${component}: probed ${preview} — ${probed.probe.interactiveCount} interactive element(s), ` +
-      `${probed.probe.viewports.length} width(s)`,
+      `${probed.probe.viewports.length} width(s), ` +
+      (states === null ? 'no state probe' : `${states.length} element(s) state-probed`),
   );
   return { probe: probed.probe, absence: null };
 }
@@ -554,7 +564,7 @@ function scoreComponent(
         guideline: metric.guideline,
         answer: 'N/A',
         source: 'unanswered',
-        evidence: 'manual metric with no answer in .polder.answers.yml',
+        evidence: NO_MANUAL_ANSWER,
       });
       continue;
     }
@@ -566,13 +576,18 @@ function scoreComponent(
       ctx,
     });
 
+    // A check that looked and could not settle the norm leaves it where it
+    // started: waiting for a person. It keeps the check's evidence, so the
+    // report says what the machine did manage to see — see
+    // `CheckResult.needsHuman`.
+    const unsettled = outcome.needsHuman === true && outcome.answer === 'N/A';
     results.push({
       metricId: metric.id,
       category: metric.category,
       subcategory: metric.subcategory,
       guideline: metric.guideline,
       answer: outcome.answer,
-      source: 'auto',
+      source: unsettled ? 'unanswered' : 'auto',
       evidence: outcome.evidence,
     });
     logger.trace(`${c.name}/${metric.id}: ${outcome.answer} (${metric.check}) — ${outcome.evidence}`);

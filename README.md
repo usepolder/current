@@ -80,15 +80,15 @@ score = Yes / (Yes + No)        N/A is excluded from the denominator
 
 That is deliberately the same arithmetic a spreadsheet audit uses, because the point is to replace the spreadsheet without changing what the number means.
 
-23 of the 30 are checked automatically. (This is the default set; [you can change it](#your-own-norms).) The rest need a person, and Current does not pretend otherwise: it reads your answers for those from a file you own.
+24 of the 30 are checked automatically. (This is the default set; [you can change it](#your-own-norms).) The rest need a person, and Current does not pretend otherwise: it reads your answers for those from a file you own.
 
 The audit sheet this came from had 32. Two are gone. **DE8**, "all layers, groups and frames are necessary", was tidiness: nobody acts on it from a quadrant, no API field answers it, and it sat permanently unanswered making the design axis look thinner than it was. **DE11**, "Figma component reflects what's in code", asked exactly what **CO12** asks from the other side — and a rubric that scores one claim twice weights it twice. CO12 keeps the claim and is now [answered from Code Connect](#5-connect-code-to-figma-optional). Ids are not renumbered, so the answers you have already written still point at the norms they were written for.
 
-Those 23 are not spread evenly, and the axes are not equally trustworthy:
+Those 24 are not spread evenly, and the axes are not equally trustworthy:
 
 | Axis | Automated | Checked against a human verdict? |
 | --- | --- | --- |
-| Code | 8 of 12 | **No.** Never, on any component. Three of the eight do not read source at all: CO3 and CO6 probe a browser, CO12 reads your Code Connect mappings. |
+| Code | 9 of 12 | **No.** Never, on any component. Four of the nine do not read source at all: CO1, CO3 and CO6 probe a browser, CO12 reads your Code Connect mappings. |
 | Design | 7 of 9 | Yes, per metric, against a hand-audited production system. |
 | Documentation | 8 of 9 | Not separately. Its checks match a heading, and the evidence string shows which heading matched. |
 
@@ -105,11 +105,11 @@ behind its automation. The design-axis validation, by contrast, found a real
 bug — a check reading Figma bound-variable keys that Figma never emits, wrong
 on every component it looked at.
 
-**Checked automatically** — ARIA attributes present, text alternatives on non-text content, hardcoded colours and px values, component naming, code/Figma property parity, whether the code declares which Figma node it implements, colour + type + spacing + radius token binding, layer naming, Auto Layout, prototype wiring, whether each documented section exists, and — for components with a `preview:` URL — keyboard reachability and breakpoint overflow, probed in a real browser.
+**Checked automatically** — ARIA attributes present, text alternatives on non-text content, hardcoded colours and px values, component naming, code/Figma property parity, whether the code declares which Figma node it implements, colour + type + spacing + radius token binding, layer naming, Auto Layout, prototype wiring, whether each documented section exists, and — for components with a `preview:` URL — keyboard reachability, breakpoint overflow and hover/pressed/focus feedback, probed in a real browser.
 
 ### Answering the manual metrics
 
-7 of the 30 need a person, and on a large system that is a lot of typing into
+6 of the 30 need a person, and on a large system that is a lot of typing into
 YAML. `current export` writes exactly the questions still outstanding to a CSV,
 with the automated findings for that component's axis beside each one:
 
@@ -120,7 +120,7 @@ with the automated findings for that component's axis beside each one:
 Fill in the answer column, then `current import` folds it back into
 `.polder.answers.yml`. Three things follow from that shape:
 
-- **The review splits across people.** The 7 metrics are 4 code, 2 design and
+- **The review splits across people.** The 6 metrics are 3 code, 2 design and
   1 documentation — an engineer, a designer and a writer. A sheet can go to
   three people at once.
 - **A blank cell stays unanswered.** It does not become `N/A`. The report keeps
@@ -130,7 +130,7 @@ Fill in the answer column, then `current import` folds it back into
 
 Columns are read by name, so sorting or adding columns in a spreadsheet is safe.
 
-**Left to a human** — interaction-state coverage, screenreader behaviour, colour contrast, localisation, whether code and Figma really say the same thing, whether layers are *necessary*, and whether the docs are any good. Figma's REST API exposes no accessibility annotations (its `AnnotationsTrait` is an empty placeholder in the published OpenAPI spec), so anything resting on that is manual by necessity, not by laziness.
+**Left to a human** — which interaction states a component actually needs (a preview can prove a missing hover, pressed or focus state, not a complete set), screenreader behaviour, colour contrast, localisation, whether code and Figma really say the same thing, whether layers are *necessary*, and whether the docs are any good. Figma's REST API exposes no accessibility annotations (its `AnnotationsTrait` is an empty placeholder in the published OpenAPI spec), so anything resting on that is manual by necessity, not by laziness.
 
 The documentation checks look for a matching section heading, with synonyms and a tolerance for plurals. That proves a section exists, not that it says anything useful — a heading check is the honest ceiling for static analysis of prose. Matching is anchored to the start of a heading, so Button's "Icon Usage" does not satisfy "usage guidelines are documented". One thing it structurally cannot do is tell **not applicable** from **not documented**; only the person auditing knows which, which is why the manual answer always wins.
 
@@ -240,7 +240,7 @@ For the CLI it is an **optional** dependency. If you document in the repo, or yo
 
 ### 4. Point at a rendered preview (optional)
 
-Two norms cannot be answered from source at all. Whether a component is reachable by keyboard does not follow from its code — a `<button>` needs no handler to work, and a `div` with an `onKeyDown` may still be unreachable. Whether it survives 320px does not follow from its CSS, because that depends on its fonts and its content. So those two are *probed*: give a component a URL that renders it in isolation and Current drives a real browser at it.
+Three norms cannot be answered from source at all. Whether a component is reachable by keyboard does not follow from its code — a `<button>` needs no handler to work, and a `div` with an `onKeyDown` may still be unreachable. Whether it survives 320px does not follow from its CSS, because that depends on its fonts and its content. And whether it *displays* a hover state is not whether it declares a `:hover` rule — the rule is usually in a stylesheet, a utility-class string or a primitive the component wraps, none of which the component's own file can see. So those three are *probed*: give a component a URL that renders it in isolation and Current drives a real browser at it.
 
 ```yaml
 components:
@@ -249,12 +249,15 @@ components:
     preview: "http://localhost:6006/iframe.html?id=button--primary"   # a Storybook story
 ```
 
+- **CO1, interaction states.** Forces `:hover` and `:hover:active` on each interactive element — the same thing DevTools' "force element state" does, over CDP, so no `mousedown` fires and the probe never trips the component's own handlers — and compares the result with that element's resting style. A control that looks identical on hover is a `No`; so is one that looks identical while pressed, and so is one whose focus state is invisible. Transitions and animations are switched off first, or a hover behind `transition: background 200ms` would read as no change at all.
 - **CO3, keyboard.** Tabs through the preview and reports what it finds. An interactive element Tab never reaches is a `No`. A Tab stop whose appearance does not change when focused is a `No` (WCAG 2.4.7) — an outline, a ring shadow, an inverted background or a thicker border all count, because plenty of systems signal focus without an outline. Comparison is against the element's own resting style, not against a list of approved properties.
 - **CO6, breakpoints.** Loads the preview at each width in `params: { widths: [...] }`, default `320, 375, 768, 1024, 1280, 1920`, and fails any width where the document scrolls sideways or an element's right edge sits past the viewport. `position: fixed` elements are exempt, so a tooltip pinned to the edge is not a finding. Probe the edges of *your* breakpoints: a layout breaks at a boundary, not in the middle of a range.
 
 **What it will not claim.** That Space, Enter and the arrow keys *do the right thing* — that needs to know what the component intends. A preview whose interactive elements are all native controls is answered `Yes`, because the platform supplies those semantics. One with a custom widget (`div[role="button"]`, a roving-tabindex listbox) is answered `N/A` with the widget named: verified reachable, activation still a human's call. Nor does it claim a layout is *good* at a width — only that nothing overflows, which is the part a machine can see.
 
-No `preview:`, no browser launched and both norms report `N/A` — and so does a preview that will not load, with the navigation error in the evidence. A broken Storybook build must never read as a system that fails its keyboard norm.
+**CO1 never answers `Yes`.** Three of the nine states it lists can be forced on a rendered element. Loading, selected, active, error and disabled need the component driven through its props, which one URL cannot do — and *which* states a given component needs is the judgment the metric is really asking for. So a clean probe is an `N/A` that says what it verified, and a human answer in `.polder.answers.yml` still settles the norm. The probe's job is to catch the component that ships without a hover state, not to certify one that has every state. So an unsettled CO1 stays in the questions `current export` writes out, with what the probe did see in its evidence column — a `No` is the machine's own finding and leaves the list. Native form fields (`input`, `textarea`, `select`) are judged on focus alone, since the platform styles them and a text box signals by focusing, not by lighting up under the pointer.
+
+No `preview:`, no browser launched and all three norms report `N/A` — and so does a preview that will not load, with the navigation error in the evidence. A broken Storybook build must never read as a system that fails its keyboard norm.
 
 One caveat worth stating plainly: point this at a *component*, not at a page. A whole-page URL reports every link in the chrome as an interactive element, which is true and useless.
 
@@ -287,7 +290,7 @@ Two things to know about how the mappings are found. They are read from the repo
 
 ```yaml
 Button:
-  CO1: Yes      # all interaction states present
+  CO1: Yes      # all the states it needs, including the six no probe can reach
   CO4: Yes      # screenreader announces it correctly
   DE2: No       # contrast fails AA
   DO1: "N/A"

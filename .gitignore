@@ -15,8 +15,8 @@ packages/core/tests/fixtures/*/.current/
 # Local editor / agent config.
 .claude/
 
-# Built output stays out of git, except the committed Action bundle.
+# Built output stays out of git, the Action bundle included: current.yml
+# builds it before `uses: ./`, so nothing in the repo has to be kept in step
+# with the source by hand. See release.yml for how a tag gets one.
 dist/
-!packages/current-action/dist/
-!packages/current-action/dist/**
 

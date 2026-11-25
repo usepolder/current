@@ -144,6 +144,34 @@ describe('renderComment', () => {
     expect(renderComment(report(), 70, 'main')).toContain('no change');
   });
 
+  /**
+   * The point of the fingerprint: two scores from different rubrics are not
+   * a delta, and "no change" is the worst of the three to print, because it
+   * reads as reassurance when nothing is being compared.
+   */
+  it('suppresses the delta when the rubric changed', () => {
+    const body = renderComment(report(), 65, 'main', true);
+    expect(body).toContain('⚠️ rubric changed — not comparable vs `main`');
+    expect(body).not.toContain('pts vs');
+  });
+
+  it('says why, under the score, when it suppressed the delta', () => {
+    const body = renderComment(report(), 70, 'main', true);
+    expect(body).toContain('reset of the trend line, not a regression');
+    expect(body).not.toContain('no change');
+  });
+
+  it('leaves the delta alone when the rubric held', () => {
+    const body = renderComment(report(), 65, 'main', false);
+    expect(body).toContain('▲ +5.0 pts vs `main`');
+    expect(body).not.toContain('rubric changed');
+  });
+
+  /** No baseline means no claim was made, so there is nothing to caveat. */
+  it('says nothing about the rubric when there is no baseline to compare', () => {
+    expect(renderComment(report(), null, null, true)).not.toContain('rubric changed');
+  });
+
   it('omits the delta on a first run with no baseline', () => {
     const body = renderComment(report(), null, null);
     expect(body).not.toContain('pts vs');

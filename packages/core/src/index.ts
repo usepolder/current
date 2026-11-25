@@ -66,6 +66,33 @@ export {
   type DocsFacts,
 } from './docs-checks';
 export {
+  LIVE_CHECKS,
+  checkKeyboardAccess,
+  checkBreakpoints,
+  requestedWidths,
+  DEFAULT_BREAKPOINT_WIDTHS,
+  PROBE_VIEWPORT_HEIGHT,
+  WIDTHS_KEY,
+  type LiveCheck,
+  type LiveFacts,
+  type LiveProbe,
+  type LiveAbsence,
+  type FocusStop,
+  type ViewportProbe,
+} from './live-checks';
+export {
+  isPreviewUrl,
+  createPlaywrightProber,
+  closeProber,
+  probeLivePages,
+  DEFAULT_PREVIEW_CONCURRENCY,
+  ProberUnavailableError,
+  PROBER_INSTALL_HINT,
+  type PageProber,
+  type ProberOptions,
+  type ProbedPage,
+} from './live-source';
+export {
   isDocsUrl,
   createPlaywrightRenderer,
   closeRenderer,

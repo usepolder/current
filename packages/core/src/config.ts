@@ -3,6 +3,8 @@ import * as yaml from 'js-yaml';
 import { isDocsUrl } from './docs-source';
 import { ConfigValidationError, ParseError, PathTraversalError } from './errors';
 import { CODE_CHECKS } from './code-checks';
+import { DEFAULT_BREAKPOINT_WIDTHS, LIVE_CHECKS, WIDTHS_KEY } from './live-checks';
+import { isPreviewUrl } from './live-source';
 import { DEFAULT_MIN_BOUND, DESIGN_CHECKS, MIN_BOUND_KEY } from './figma-checks';
 import { CATEGORIES, DEFAULT_METRICS, type MetricCategory, type MetricDef } from './metrics';
 
@@ -20,6 +22,12 @@ export interface ComponentMapping {
   figma: string | null;
   /** Repo-relative posix path to the component's doc file, or null. */
   docs: string | null;
+  /**
+   * URL that renders this component in isolation — a Storybook story, a
+   * styleguide page, anything a browser can open. Null when unmapped, which
+   * makes the probe-backed norms (CO3, CO6) report N/A rather than No.
+   */
+  preview: string | null;
 }
 
 export interface CurrentConfig {
@@ -86,18 +94,36 @@ function readOptionalString(
   return value.trim();
 }
 
+/**
+ * `preview:` is a URL or nothing. A repo path is rejected outright rather
+ * than quietly ignored: a team that writes one has a mental model of this
+ * field that will not produce the scores they expect, and finding that out
+ * from a config error beats finding it out from a column of N/As.
+ */
+function readPreview(value: unknown, component: string): string | null {
+  const url = readOptionalString(value, component, 'preview');
+  if (url === null) return null;
+  if (!isPreviewUrl(url)) {
+    throw new ConfigValidationError(
+      `components.${component}.preview must be an http(s) URL that renders the component ` +
+        `(e.g. a Storybook story URL), not a path — got "${url}"`,
+    );
+  }
+  return url;
+}
+
 function parseComponents(raw: unknown): ComponentMapping[] {
   if (raw === undefined || raw === null) return [];
   if (!isPlainObject(raw)) {
     throw new ConfigValidationError(
-      '`components` must be a mapping of component name to { code, figma, docs }',
+      '`components` must be a mapping of component name to { code, figma, docs, preview }',
     );
   }
   const out: ComponentMapping[] = [];
   for (const [name, value] of Object.entries(raw)) {
     if (!isPlainObject(value)) {
       throw new ConfigValidationError(
-        `components.${name} must be an object with code / figma / docs keys`,
+        `components.${name} must be an object with code / figma / docs / preview keys`,
       );
     }
     // A component with no mappings at all is legal: it is scored purely from
@@ -110,6 +136,7 @@ function parseComponents(raw: unknown): ComponentMapping[] {
       code: readOptionalString(value.code, name, 'code'),
       figma: readOptionalString(value.figma, name, 'figma'),
       docs: readOptionalString(value.docs, name, 'docs'),
+      preview: readPreview(value.preview, name),
     });
   }
   return out;
@@ -125,7 +152,8 @@ function parseComponents(raw: unknown): ComponentMapping[] {
 type ParamSpec =
   | null
   | { kind: 'strings'; key: 'headings' | 'text' }
-  | { kind: 'percent'; key: typeof MIN_BOUND_KEY; default: number };
+  | { kind: 'percent'; key: typeof MIN_BOUND_KEY; default: number }
+  | { kind: 'widths'; key: typeof WIDTHS_KEY; default: readonly number[] };
 
 /** Yes requires this share of relevant layers to bind a token. */
 const MIN_BOUND_SPEC: ParamSpec = {
@@ -134,9 +162,17 @@ const MIN_BOUND_SPEC: ParamSpec = {
   default: DEFAULT_MIN_BOUND,
 };
 
+/** Viewport widths a breakpoints norm probes. Optional: there is a default. */
+const WIDTHS_SPEC: ParamSpec = {
+  kind: 'widths',
+  key: WIDTHS_KEY,
+  default: DEFAULT_BREAKPOINT_WIDTHS,
+};
+
 /** The checks a norm may name, and the `params` each takes. */
 const CHECK_PARAM: Record<string, ParamSpec> = {
   ...Object.fromEntries(Object.keys(CODE_CHECKS).map((id) => [id, null])),
+  ...Object.fromEntries(Object.keys(LIVE_CHECKS).map((id) => [id, null])),
   ...Object.fromEntries(Object.keys(DESIGN_CHECKS).map((id) => [id, null])),
   'docs.section': { kind: 'strings', key: 'headings' },
   'code.contains': { kind: 'strings', key: 'text' },
@@ -145,6 +181,7 @@ const CHECK_PARAM: Record<string, ParamSpec> = {
   'design.type-tokens': MIN_BOUND_SPEC,
   'design.spacing-tokens': MIN_BOUND_SPEC,
   'design.radius-tokens': MIN_BOUND_SPEC,
+  'code.breakpoints': WIDTHS_SPEC,
 };
 
 /** A check only sees its own source, so its id has to match the axis it scores. */
@@ -231,6 +268,28 @@ function parseCheck(
       );
     }
     return { check, params: { [spec.key]: value } };
+  }
+
+  if (spec.kind === 'widths') {
+    // Optional, like `percent`: the check ships a default scale.
+    if (entry.params === undefined) return { check };
+    const params = entry.params;
+    const list = isPlainObject(params) ? params[spec.key] : undefined;
+    if (
+      !isPlainObject(params) ||
+      Object.keys(params).some((k) => k !== spec.key) ||
+      !Array.isArray(list) ||
+      list.length === 0 ||
+      !list.every((x) => typeof x === 'number' && Number.isFinite(x) && x >= 200 && x <= 4000)
+    ) {
+      throw new ConfigValidationError(
+        `${where}: check "${check}" takes params: { ${spec.key}: [viewport widths in px, ` +
+          `each from 200 to 4000] }. Default ${spec.default.join(', ')}. ` +
+          'Probe the edges of your own breakpoints — a layout breaks at a boundary.',
+      );
+    }
+    const widths = [...new Set(list as number[])].sort((a, b) => a - b);
+    return { check, params: { [spec.key]: widths } };
   }
 
   const params = entry.params;

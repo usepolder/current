@@ -103,11 +103,11 @@ behind its automation. The design-axis validation, by contrast, found a real
 bug — a check reading Figma bound-variable keys that Figma never emits, wrong
 on every component it looked at.
 
-**Checked automatically** — ARIA attributes present, text alternatives on non-text content, hardcoded colours and px values, component naming, code/Figma property parity, colour + type + spacing + radius token binding, layer naming, Auto Layout, prototype wiring, and whether each documented section exists.
+**Checked automatically** — ARIA attributes present, text alternatives on non-text content, hardcoded colours and px values, component naming, code/Figma property parity, colour + type + spacing + radius token binding, layer naming, Auto Layout, prototype wiring, whether each documented section exists, and — for components with a `preview:` URL — keyboard reachability and breakpoint overflow, probed in a real browser.
 
 ### Answering the manual metrics
 
-12 of the 32 need a person, and on a large system that is a lot of typing into
+10 of the 32 need a person, and on a large system that is a lot of typing into
 YAML. `current export` writes exactly the questions still outstanding to a CSV,
 with the automated findings for that component's axis beside each one:
 
@@ -118,7 +118,7 @@ with the automated findings for that component's axis beside each one:
 Fill in the answer column, then `current import` folds it back into
 `.polder.answers.yml`. Three things follow from that shape:
 
-- **The review splits across people.** The 12 metrics are 7 code, 4 design and
+- **The review splits across people.** The 10 metrics are 5 code, 4 design and
   1 documentation — an engineer, a designer and a writer. A sheet can go to
   three people at once.
 - **A blank cell stays unanswered.** It does not become `N/A`. The report keeps
@@ -128,7 +128,7 @@ Fill in the answer column, then `current import` folds it back into
 
 Columns are read by name, so sorting or adding columns in a spreadsheet is safe.
 
-**Left to a human** — interaction-state coverage, keyboard and screenreader behaviour, colour contrast, responsiveness, localisation, whether layers are *necessary*, and whether the docs are any good. Figma's REST API exposes no accessibility annotations (its `AnnotationsTrait` is an empty placeholder in the published OpenAPI spec), so anything resting on that is manual by necessity, not by laziness.
+**Left to a human** — interaction-state coverage, screenreader behaviour, colour contrast, localisation, whether code and Figma really say the same thing, whether layers are *necessary*, and whether the docs are any good. Figma's REST API exposes no accessibility annotations (its `AnnotationsTrait` is an empty placeholder in the published OpenAPI spec), so anything resting on that is manual by necessity, not by laziness.
 
 The documentation checks look for a matching section heading, with synonyms and a tolerance for plurals. That proves a section exists, not that it says anything useful — a heading check is the honest ceiling for static analysis of prose. Matching is anchored to the start of a heading, so Button's "Icon Usage" does not satisfy "usage guidelines are documented". One thing it structurally cannot do is tell **not applicable** from **not documented**; only the person auditing knows which, which is why the manual answer always wins.
 
@@ -185,6 +185,7 @@ current:
       code: "src/components/Button/Button.tsx"
       figma: "1:24"
       docs: "docs/button.mdx"
+      preview: "http://localhost:6006/iframe.html?id=button--primary"
     Badge:
       code: "src/components/Badge/Badge.tsx"
       figma: "1:37"
@@ -235,14 +236,34 @@ Pages are rendered four at a time in one browser, so run time no longer grows li
 
 For the CLI it is an **optional** dependency. If you document in the repo, or you do not score documentation at all, you never install it and `npx @usepolder/current` stays small. Without it, URL-mapped docs report as N/A with that hint — never as "undocumented", because "we could not look" and "we looked and found nothing" are different answers.
 
-### 4. Answer the manual metrics
+### 4. Point at a rendered preview (optional)
+
+Two norms cannot be answered from source at all. Whether a component is reachable by keyboard does not follow from its code — a `<button>` needs no handler to work, and a `div` with an `onKeyDown` may still be unreachable. Whether it survives 320px does not follow from its CSS, because that depends on its fonts and its content. So those two are *probed*: give a component a URL that renders it in isolation and Current drives a real browser at it.
+
+```yaml
+components:
+  Button:
+    code: "src/components/Button/Button.tsx"
+    preview: "http://localhost:6006/iframe.html?id=button--primary"   # a Storybook story
+```
+
+- **CO3, keyboard.** Tabs through the preview and reports what it finds. An interactive element Tab never reaches is a `No`. A Tab stop whose appearance does not change when focused is a `No` (WCAG 2.4.7) — an outline, a ring shadow, an inverted background or a thicker border all count, because plenty of systems signal focus without an outline. Comparison is against the element's own resting style, not against a list of approved properties.
+- **CO6, breakpoints.** Loads the preview at each width in `params: { widths: [...] }`, default `320, 375, 768, 1024, 1280, 1920`, and fails any width where the document scrolls sideways or an element's right edge sits past the viewport. `position: fixed` elements are exempt, so a tooltip pinned to the edge is not a finding. Probe the edges of *your* breakpoints: a layout breaks at a boundary, not in the middle of a range.
+
+**What it will not claim.** That Space, Enter and the arrow keys *do the right thing* — that needs to know what the component intends. A preview whose interactive elements are all native controls is answered `Yes`, because the platform supplies those semantics. One with a custom widget (`div[role="button"]`, a roving-tabindex listbox) is answered `N/A` with the widget named: verified reachable, activation still a human's call. Nor does it claim a layout is *good* at a width — only that nothing overflows, which is the part a machine can see.
+
+No `preview:`, no browser launched and both norms report `N/A` — and so does a preview that will not load, with the navigation error in the evidence. A broken Storybook build must never read as a system that fails its keyboard norm.
+
+One caveat worth stating plainly: point this at a *component*, not at a page. A whole-page URL reports every link in the chrome as an interactive element, which is true and useless.
+
+### 5. Answer the manual metrics
 
 `.polder.answers.yml`:
 
 ```yaml
 Button:
   CO1: Yes      # all interaction states present
-  CO3: Yes      # keyboard accessible
+  CO4: Yes      # screenreader announces it correctly
   DE2: No       # contrast fails AA
   DO1: "N/A"
 ```

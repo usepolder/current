@@ -7,8 +7,10 @@ import {
   TOKEN_ENV_VAR,
   appendHistory,
   closeRenderer,
+  closeProber,
   createLogger,
   createPlaywrightRenderer,
+  createPlaywrightProber,
   entryFromReport,
   isDocsUrl,
   loadUsage,
@@ -454,6 +456,9 @@ export async function run(argv: readonly string[], io: RunIo): Promise<number> {
     // Only spin up a renderer if some component actually points at a URL.
     const needsRenderer = config.components.some((c) => c.docs !== null && isDocsUrl(c.docs));
     const renderDocs = needsRenderer ? createPlaywrightRenderer({ logger }) : null;
+    // Same deal for previews: no `preview:` mapped, no browser launched.
+    const needsProber = config.components.some((c) => c.preview !== null);
+    const probeLive = needsProber ? createPlaywrightProber({ logger }) : null;
     if (figma === null && config.figmaFileKey !== null) {
       logger.trace(`$${TOKEN_ENV_VAR} not set — design metrics will report as unavailable`);
     }
@@ -469,11 +474,21 @@ export async function run(argv: readonly string[], io: RunIo): Promise<number> {
 
     let report;
     try {
-      report = await scanRepo({ repoRoot: dir, config, answers, figma, renderDocs, usage, logger });
+      report = await scanRepo({
+        repoRoot: dir,
+        config,
+        answers,
+        figma,
+        renderDocs,
+        probeLive,
+        usage,
+        logger,
+      });
     } finally {
       // Always shut the browser down, including on a failed scan, so a crash
       // never strands a headless chromium on the user's machine.
       await closeRenderer(renderDocs);
+      await closeProber(probeLive);
     }
 
     if (args.recordHistory) {

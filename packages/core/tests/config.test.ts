@@ -410,3 +410,81 @@ describe('metricKeys', () => {
     expect(metricKeys(cfg.metrics).find((k) => k.startsWith('CO2'))).toMatch(/^CO2:/);
   });
 });
+
+describe('preview mapping', () => {
+  it('reads a preview URL', () => {
+    const c = parseConfig(polder(`
+components:
+  Button:
+    code: "src/Button.tsx"
+    preview: "http://localhost:6006/iframe.html?id=button--primary"
+`));
+    expect(c.components[0].preview).toBe('http://localhost:6006/iframe.html?id=button--primary');
+  });
+
+  it('defaults preview to null', () => {
+    expect(parseConfig(polder(MINIMAL)).components[0].preview).toBeNull();
+  });
+
+  // A path here would silently never be probed, so it is an error, not a shrug.
+  it('rejects a repo path, pointing at what preview is for', () => {
+    expect(() =>
+      parseConfig(polder(`
+components:
+  Button:
+    preview: "src/Button.stories.tsx"
+`)),
+    ).toThrow(/must be an http\(s\) URL/);
+  });
+});
+
+describe('code.breakpoints widths', () => {
+  it('takes no params by default', () => {
+    const c = parseConfig(polder(MINIMAL));
+    expect(c.metrics.find((m) => m.id === 'CO6')?.check).toBe('code.breakpoints');
+    expect(c.metrics.find((m) => m.id === 'CO6')?.params).toBeUndefined();
+  });
+
+  it('accepts a configured scale, sorted and deduped', () => {
+    const c = parseConfig(polder(`
+components:
+  Button:
+    code: "src/Button.tsx"
+metrics:
+  override:
+    CO6:
+      params: { widths: [1280, 360, 360] }
+`));
+    expect(c.metrics.find((m) => m.id === 'CO6')?.params).toEqual({ widths: [360, 1280] });
+  });
+
+  it('rejects widths that are not plausible viewports', () => {
+    for (const widths of ['[0]', '[12]', '["320px"]', '[]', '[9000]']) {
+      expect(() =>
+        parseConfig(polder(`
+components:
+  Button:
+    code: "src/Button.tsx"
+metrics:
+  override:
+    CO6:
+      params: { widths: ${widths} }
+`)),
+      ).toThrow(ConfigValidationError);
+    }
+  });
+
+  it('refuses a probe-backed check on a norm from another axis', () => {
+    expect(() =>
+      parseConfig(polder(`
+components:
+  Button:
+    code: "src/Button.tsx"
+metrics:
+  override:
+    DE6:
+      check: "code.keyboard"
+`)),
+    ).toThrow(/cannot score a design norm/);
+  });
+});

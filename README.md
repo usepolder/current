@@ -458,7 +458,9 @@ npm test
 npm run current -- <path-to-design-system>
 ```
 
-Releasing: tag `vX.Y.Z` and push. The release workflow runs the suite, verifies the committed Action bundle matches the source, publishes to npm, and cuts the GitHub release.
+Releasing: tag `vX.Y.Z` and push. The release workflow runs the suite, builds the Action bundle, commits it on top of the tagged commit and **moves the tag onto that commit**, then publishes to npm and cuts the GitHub release.
+
+The bundle is not committed to `main` — `current.yml` builds it per run, so nothing in the repo has to be kept in step with the source by hand. But `action.yml` names `packages/current-action/dist/index.js` as its entry point and GitHub builds nothing for a consuming workflow, so the bundle has to be in the tree a consumer resolves. Hence the tag move: `uses: usepolder/current@vX.Y.Z` keeps working, at the cost of a published tag that is not immutable. If you fetched a release tag in the seconds before the workflow moved it, `git fetch --tags --force` gets you the real one, and the commit a release tag points at is deliberately not on `main`.
 
 ## Related
 

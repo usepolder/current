@@ -1,11 +1,12 @@
 # Publishes on a version tag: v1.2.3 -> npm + a GitHub release.
 #
-# The Action bundle is NOT committed to the repo any more (current.yml builds
-# it per run), so a tag cut from main carries no dist/. action.yml names
+# The Action bundle is not committed to the repo (current.yml builds it per
+# run), so a tag cut from main carries no dist/. action.yml names
 # packages/current-action/dist/index.js as its entry point and GitHub builds
 # nothing for a consumer, so `uses: usepolder/current@vX.Y.Z` needs that file
-# to be IN the tagged tree. Until the release flow puts it there, the guard
-# below stops the release rather than publishing an Action that cannot start.
+# to be IN the tagged tree. This workflow therefore builds the bundle, commits
+# it on top of the tagged commit, and MOVES the tag to that commit — so the
+# tag a human pushes is not the tag consumers end up resolving.
 name: Release
 on:
   push:
@@ -19,7 +20,11 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      # Full history: this job commits and pushes, and a shallow clone can be
+      # refused by the remote when it pushes objects whose parents it lacks.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       # Node 24 ships npm 11; npm trusted publishing needs npm >=11.5.1 and
       # Node >=22.14.0. ci.yml stays on 20, the floor `engines` declares.
       - uses: actions/setup-node@v4
@@ -34,23 +39,54 @@ jobs:
       - name: Build packages and the Action bundle
         run: npm run build:action
 
-      # Was: "fail if the committed bundle is stale". Nothing is committed now,
-      # so staleness is not the risk any more — absence is.
-      - name: Refuse to publish a tag with no Action bundle in its tree
+      # Put the bundle on the tag.
+      #
+      # The tag moves, which makes a published ref mutable — the deliberate
+      # cost of keeping `uses: usepolder/current@vX.Y.Z` working with no
+      # bundle in the repo. Two things follow. Anyone who fetched the tag in
+      # the seconds between the human's push and this step keeps the
+      # bundle-less commit until they `git fetch --tags --force`; and the
+      # commit this tag ends up on is NOT on main, by design, so main stays
+      # free of build output.
+      #
+      # This push uses GITHUB_TOKEN, and GitHub does not start workflow runs
+      # for events raised by that token, so moving a `v*` tag here does not
+      # re-trigger this workflow. Do not swap in a PAT without re-reading
+      # that: a PAT would make this recursive.
+      - name: Commit the Action bundle and move the tag onto it
         run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
           if git ls-tree -r --name-only HEAD -- packages/current-action/dist \
             | grep -q 'dist/index.js'; then
-            echo "Tagged tree carries the Action bundle."
+            echo "This tag already carries the bundle - nothing to do."
             exit 0
           fi
-          echo "::error::This tag has no packages/current-action/dist/index.js, so"
-          echo "  uses: usepolder/current@${GITHUB_REF_NAME}"
-          echo "would fail for every consumer: action.yml names that file as its entry"
-          echo "point and GitHub builds nothing for a consuming workflow."
-          echo ""
-          echo "The bundle is no longer committed to main, so the release flow has to"
-          echo "put it on the tag. That decision is open - see the pull request that"
-          echo "dropped it. Nothing was published."
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          # -f because packages/current-action/dist is gitignored.
+          git add -f packages/current-action/dist
+          git commit -m "chore(release): Action bundle for ${TAG}"
+          git tag -f "$TAG"
+          git push --force origin "refs/tags/${TAG}"
+          echo "Moved $TAG to $(git rev-parse HEAD)"
+
+      # Belt and braces: never publish to npm against a tag a consumer cannot
+      # run. Reads the REMOTE tag, so it checks what consumers will resolve
+      # rather than what this runner happens to have locally.
+      - name: Verify the published tag can start
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          git fetch --force origin "refs/tags/${TAG}:refs/tags/verify-${TAG}"
+          if git ls-tree -r --name-only "refs/tags/verify-${TAG}" \
+            -- packages/current-action/dist | grep -q 'dist/index.js'; then
+            echo "Remote $TAG carries packages/current-action/dist/index.js."
+            exit 0
+          fi
+          echo "::error::Remote tag $TAG has no packages/current-action/dist/index.js,"
+          echo "so 'uses: usepolder/current@${TAG}' would fail for every consumer."
+          echo "Nothing was published to npm."
           exit 1
 
       # No NODE_AUTH_TOKEN: npm authenticates via OIDC (trusted publishing),

@@ -80,7 +80,7 @@ score = Yes / (Yes + No)        N/A is excluded from the denominator
 
 That is deliberately the same arithmetic a spreadsheet audit uses, because the point is to replace the spreadsheet without changing what the number means.
 
-26 of the 28 are checked automatically. (This is the default set; [you can change it](#your-own-norms).) The rest need a person, and Current does not pretend otherwise: it reads your answers for those from a file you own.
+27 of the 28 are checked automatically. (This is the default set; [you can change it](#your-own-norms).) The rest need a person, and Current does not pretend otherwise: it reads your answers for those from a file you own.
 
 The audit sheet this came from had 32. Four are gone. **DE8**, "all layers, groups and frames are necessary", was tidiness: nobody acts on it from a quadrant, no API field answers it, and it sat permanently unanswered making the design axis look thinner than it was. **DE11**, "Figma component reflects what's in code", asked exactly what **CO12** asks from the other side — and a rubric that scores one claim twice weights it twice. CO12 keeps the claim and is now [answered from Code Connect](#5-connect-code-to-figma-optional). **CO11**, "component is usable in all supported languages", was language testing, which belongs to the design process rather than here; its own note said it "can only be checked in production", and a norm that cannot be answered where the audit runs is a reminder, not a norm. **DO1**, "component statuses are up to date", was a relic of the one system this rubric was transcribed from: status taxonomies are per-system and plenty of systems have none, so it was inapplicable for most adopters while scoring them anyway. Ids are not renumbered, so the answers you have already written still point at the norms they were written for, and each gap in the sequence is the record of what was dropped.
 
@@ -88,7 +88,7 @@ Those 25 are not spread evenly, and the axes are not equally trustworthy:
 
 | Axis | Automated | Checked against a human verdict? |
 | --- | --- | --- |
-| Code | 10 of 11 | **No.** Never, on any component. Five of the ten do not read source at all: CO1, CO3, CO4 and CO6 probe a browser, CO12 reads your Code Connect mappings. |
+| Code | 11 of 11 | **No.** Never, on any component. Six of the eleven do not read source at all: CO1, CO3, CO4, CO6 and CO10 probe a browser, CO12 reads your Code Connect mappings. |
 | Design | 8 of 9 | Yes, per metric, against a hand-audited production system. |
 | Documentation | 8 of 8 | Not separately. Its checks match a heading, and the evidence string shows which heading matched. |
 
@@ -116,11 +116,11 @@ file-backed one, which is a weaker thing. The `#1:2` suffix on property keys
 is the mirror image: observed on every real file, documented nowhere, so every
 reader here strips it when present and none requires it.
 
-**Checked automatically** — ARIA attributes present, text alternatives on non-text content, hardcoded colours and px values, component naming, code/Figma property parity, whether the code declares which Figma node it implements, colour + type + spacing + radius token binding, layer naming, Auto Layout, which interaction states the Figma component declares, whether those states are wired up, whether each documented section exists, and — for components with a `preview:` URL — keyboard reachability, breakpoint overflow, hover/pressed/focus feedback and what a screen reader announces, probed in a real browser.
+**Checked automatically** — ARIA attributes present, text alternatives on non-text content, hardcoded colours and px values, component naming, code/Figma property parity, whether the code declares which Figma node it implements, colour + type + spacing + radius token binding, layer naming, Auto Layout, which interaction states the Figma component declares, whether those states are wired up, whether each documented section exists, and — for components with a `preview:` URL — keyboard reachability, breakpoint overflow, hover/pressed/focus feedback, what a screen reader announces and whether the layout survives 40% more text, probed in a real browser.
 
 ### Answering the manual metrics
 
-2 of the 28 need a person, and on a large system that is a lot of typing into
+1 of the 28 needs a person, and on a large system that is a lot of typing into
 YAML. `current export` writes exactly the questions still outstanding to a CSV,
 with the automated findings for that component's axis beside each one:
 
@@ -141,7 +141,7 @@ Fill in the answer column, then `current import` folds it back into
 
 Columns are read by name, so sorting or adding columns in a spreadsheet is safe.
 
-**Left to a human** — whether a component that declares no interaction states at all needs any (Figma settles the question for every component that does declare them, as variant options or boolean properties; a browser probe can only ever prove one state missing, never a complete set), whether a screen reader user can actually *complete the task* (the probe finds the controls that are unnamed, unroled or silent about their state, which is the half a machine can settle), colour contrast, and whether the component declares its own min/max bounds. Figma's REST API exposes no accessibility annotations (its `AnnotationsTrait` is an empty placeholder in the published OpenAPI spec), so anything resting on that is manual by necessity, not by laziness.
+**Left to a human** — whether a component that declares no interaction states at all needs any (Figma settles the question for every component that does declare them, as variant options or boolean properties; a browser probe can only ever prove one state missing, never a complete set), whether a screen reader user can actually *complete the task* (the probe finds the controls that are unnamed, unroled or silent about their state, which is the half a machine can settle), and colour contrast in the design. Figma's REST API exposes no accessibility annotations (its `AnnotationsTrait` is an empty placeholder in the published OpenAPI spec), so anything resting on that is manual by necessity, not by laziness.
 
 The documentation checks look for a matching section heading, with synonyms and a tolerance for plurals. That proves a section exists, not that it says anything useful — a heading check is the honest ceiling for static analysis of prose. Matching is anchored to the start of a heading, so Button's "Icon Usage" does not satisfy "usage guidelines are documented". One thing it structurally cannot do is tell **not applicable** from **not documented**; only the person auditing knows which, which is why the manual answer always wins.
 
@@ -251,7 +251,7 @@ For the CLI it is an **optional** dependency. If you document in the repo, or yo
 
 ### 4. Point at a rendered preview (optional)
 
-Four norms cannot be answered from source at all. Whether a component is reachable by keyboard does not follow from its code — a `<button>` needs no handler to work, and a `div` with an `onKeyDown` may still be unreachable. Whether it survives 320px does not follow from its CSS, because that depends on its fonts and its content. And whether it *displays* a hover state is not whether it declares a `:hover` rule — the rule is usually in a stylesheet, a utility-class string or a primitive the component wraps, none of which the component's own file can see. And what a screen reader announces is a property of the accessibility tree the browser builds, which no amount of source reading reconstructs. So those four are *probed*: give a component a URL that renders it in isolation and Current drives a real browser at it.
+Five norms cannot be answered from source at all. Whether a component is reachable by keyboard does not follow from its code — a `<button>` needs no handler to work, and a `div` with an `onKeyDown` may still be unreachable. Whether it survives 320px does not follow from its CSS, because that depends on its fonts and its content. And whether it *displays* a hover state is not whether it declares a `:hover` rule — the rule is usually in a stylesheet, a utility-class string or a primitive the component wraps, none of which the component's own file can see. And what a screen reader announces is a property of the accessibility tree the browser builds, which no amount of source reading reconstructs. And whether a component's bounds hold is not visible in its CSS either, because it depends on the length of the text that ends up in it. So those five are *probed*: give a component a URL that renders it in isolation and Current drives a real browser at it.
 
 ```yaml
 components:
@@ -264,6 +264,7 @@ components:
 - **CO3, keyboard.** Tabs through the preview and reports what it finds. An interactive element Tab never reaches is a `No`. A Tab stop whose appearance does not change when focused is a `No` (WCAG 2.4.7) — an outline, a ring shadow, an inverted background or a thicker border all count, because plenty of systems signal focus without an outline. Comparison is against the element's own resting style, not against a list of approved properties.
 - **CO4, screen reader.** Drives [`@guidepup/virtual-screen-reader`](https://github.com/guidepup/virtual-screen-reader) over the rendered preview — a screen reader implemented in JavaScript against the accessibility tree, so there is no OS to match and no AT to install — and reports what it announced for each interactive element. An element that reaches the tree with no accessible name is a `No`: announced as a bare `button`, it tells the user something is there and nothing about what it does. An element with interaction wired to it but no role is a `No`: a focusable `<div>` sounds exactly like a paragraph. A control that declares a state the reader never announces is a `No` — `<a href aria-pressed="true">` announces `link, More`, so the toggle's user cannot hear whether it is on.
 - **CO6, breakpoints.** Loads the preview at each width in `params: { widths: [...] }`, default `320, 375, 768, 1024, 1280, 1920`, and fails any width where the document scrolls sideways or an element's right edge sits past the viewport. `position: fixed` elements are exempt, so a tooltip pinned to the edge is not a finding. Probe the edges of *your* breakpoints: a layout breaks at a boundary, not in the middle of a range.
+- **CO10, declared bounds.** Re-renders the preview with its text pseudo-localized — every word swapped for an accented look-alike and grown about 40%, so `Save changes` becomes `[Śàṽéàé ćĥàńĝéśàéî]` — and measures what that broke, at every CO6 width. Content that now pushes the viewport sideways is a `No`. Content that now spills out of a container which neither clips nor scrolls is a `No`. Text that is now cut off is a `No` **only when nothing declared it may be**: a `text-overflow: ellipsis`, a line clamp, a `max-width` or a `max-height` is the author saying this text truncates, which is CO10 being satisfied rather than failed. Same for `overflow: auto` — that is the author saying the content may exceed the box.
 
 **What it will not claim.** That Space, Enter and the arrow keys *do the right thing* — that needs to know what the component intends. A preview whose interactive elements are all native controls is answered `Yes`, because the platform supplies those semantics. One with a custom widget (`div[role="button"]`, a roving-tabindex listbox) is answered `N/A` with the widget named: verified reachable, activation still a human's call. Nor does it claim a layout is *good* at a width — only that nothing overflows, which is the part a machine can see.
 
@@ -273,7 +274,13 @@ components:
 
 It is an **optional** dependency, resolved lazily like the browser: not installed, and CO4 reports `N/A` with the install hint. In the Action it is fetched on demand (pinned, no install scripts) the first time a preview needs it, and if that fetch fails the norm reports `N/A` with a warning rather than failing the run.
 
-No `preview:`, no browser launched and all four norms report `N/A` — and so does a preview that will not load, with the navigation error in the evidence. A broken Storybook build must never read as a system that fails its keyboard norm.
+**CO10 is the first of these with a real `Yes`**, and it is worth saying why that is defensible where CO1's and CO4's would not be. "Does this component hold at 40% more text" is an objective question with an observable answer; "are all the necessary states present" and "can a screen reader user succeed" are not. It still claims only what it measured: that bounds exist and hold, never that they are the *right* bounds. It says nothing about whether the component is translated, translatable or RTL-safe — mirroring is a different norm, not a quiet extension of this one — and nothing about text a consumer passes in, which is part of why the expansion is proportional to the text that is actually there.
+
+Every finding is a **difference** against the same measurement taken before the text was touched. That is not a refinement, it is the whole validity of the check: measured against real markup, a flex row whose children already spilled and a button whose label was already clipped both showed up, and charging CO10 for breakage that pre-dates the expansion would be reporting another norm's bug under this one.
+
+It is not a localisation metric, and the distinction matters because [CO11 was removed](#the-metrics) for being a language question. Pseudo-localization never tests a language — its output is not a language. It is a text-expansion stress test, and text expansion is the force that reveals whether bounds were declared at all.
+
+No `preview:`, no browser launched and all five norms report `N/A` — and so does a preview that will not load, with the navigation error in the evidence. A broken Storybook build must never read as a system that fails its keyboard norm.
 
 One thing CO4 reports without scoring: an interactive element the reader never announced at all, usually `aria-hidden` over something a pointer can still reach. Hiding a duplicate control from the accessibility tree is sometimes exactly right and this check cannot tell which, so it names them in the evidence and leaves the verdict alone.
 
@@ -385,6 +392,9 @@ The checks a norm can name:
 | `code.forbids` | the component's source contains none of these | `text: [...]` |
 | `code.aria-attributes`, `code.text-alternatives`, `code.token-usage`, `code.semantic-name`, `code.figma-prop-parity`, `code.figma-connect` | as in [the metrics](#the-metrics) | none |
 | `design.color-tokens`, `design.type-tokens`, `design.spacing-tokens`, `design.radius-tokens` | as in [the metrics](#the-metrics) | `min_bound: 100` (optional) |
+| `code.keyboard`, `code.states`, `code.screenreader` | as in [a rendered preview](#4-point-at-a-rendered-preview-optional) — the first two and the third never answer `Yes` | none |
+| `code.breakpoints` | nothing overflows the viewport at any of these widths | `widths: [320, 375, 768, 1024, 1280, 1920]` (optional) |
+| `code.text-expansion` | the layout holds with every word grown ~40% | the widths from `code.breakpoints` |
 | `design.interaction-states` | the Figma component declares every state in this list | `states: [hover, pressed, disabled]` (optional) |
 | `design.layer-names`, `design.prototyping`, `design.auto-layout` | as in [the metrics](#the-metrics) | none |
 

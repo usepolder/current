@@ -159,6 +159,37 @@ export interface ScreenReaderProbe {
   silent: string[];
 }
 
+/**
+ * What one viewport looked like with the component's text expanded.
+ *
+ * Every field is a DIFFERENCE against the same measurement taken before the
+ * text was touched. That is not a refinement, it is the whole validity of the
+ * check: measured against real markup, a flex row whose children already
+ * spilled and a button whose label was already clipped both showed up as
+ * findings, and charging CO10 for breakage that pre-dates the expansion would
+ * be reporting someone else's bug under this norm.
+ */
+export interface ExpansionProbe {
+  width: number;
+  /** Text runs that were expanded. Zero means there was nothing to stress. */
+  textNodes: number;
+  /** Characters of original text, for the evidence. */
+  chars: number;
+  /** The document scrolls sideways now and did not before. */
+  viewportOverflow: boolean;
+  /** How far past the viewport, in points. */
+  overflowBy: number;
+  /**
+   * Elements whose text is now cut off with no declared limit: clipped by
+   * `overflow: hidden` with no `text-overflow: ellipsis`, no line clamp and
+   * no `max-width`/`max-height`. An author who declared any of those said the
+   * text may be truncated, which is CO10 being satisfied rather than failed.
+   */
+  clipped: string[];
+  /** Elements whose content now spills out of a container that does not clip. */
+  spilling: string[];
+}
+
 /** What one preview URL yielded. */
 export interface LiveProbe {
   url: string;
@@ -180,6 +211,11 @@ export interface LiveProbe {
    * run — same contract as `states`, and for the same reason.
    */
   screenReader: ScreenReaderProbe | null;
+  /**
+   * One entry per width, with the component's text pseudo-localized, or
+   * `null` when the page could not be stressed at all. Same contract again.
+   */
+  expansion: ExpansionProbe[] | null;
 }
 
 /**
@@ -599,9 +635,134 @@ function describeStops(stops: readonly ScreenReaderStop[]): string {
     .join(', ');
 }
 
+/**
+ * CO10 — the component declares its bounds, and they hold when the text grows.
+ *
+ * CO10 was manual with no reason recorded against it, unlike CO4 and DE2
+ * whose manual status was forced by what an API exposed. It was manual
+ * because nobody had built the check.
+ *
+ * Pseudo-localization is the check. Render the component with its text
+ * replaced by accented, expanded content — `[Śàṽéàé ćĥàńĝéśàéî]`, about 40%
+ * longer — and the failures this norm is really about become visible: a label
+ * that overflows its container, a button that grows past the viewport, text
+ * clipped at a limit nobody declared, a layout that only ever held together
+ * because English is short.
+ *
+ * This is not a localisation metric, and the distinction matters because CO11
+ * was removed for being a language question. Pseudo-localization never tests
+ * a language — its output is not a language. It is a text-expansion stress
+ * test, and text expansion is exactly the force that reveals whether min and
+ * max dimensions were declared. The claim stays "the component declares its
+ * bounds", which is CO10's claim; the pseudo-locale is only the lever that
+ * makes an undeclared bound observable.
+ *
+ * This is the first live check with a genuine **Yes**, and it is defensible
+ * where CO1's and CO4's would not be. "Does this component hold at +40% text"
+ * is an objective question with an observable answer, unlike "are all
+ * necessary states present" or "can a screen reader user succeed". CO6
+ * already measures overflow in the browser; this is the same measurement
+ * under a different stressor, which is a good sign the check belongs where it
+ * is going.
+ *
+ * What it deliberately does NOT claim:
+ *
+ *   - That the bounds are the RIGHT bounds. Only that bounds exist and hold.
+ *   - That the component is translated, translatable or RTL-safe. Mirroring
+ *     is a different check and is not in scope; if it is ever wanted it is
+ *     its own norm, not a quiet extension of this one.
+ *   - Anything about text the CONSUMER supplies. A component handed a
+ *     400-character label by its caller is not failing CO10, which is part of
+ *     why the expansion is proportional to the text that is actually there.
+ */
+export function checkTextExpansion(facts: LiveFacts): CheckResult {
+  if (facts.probe === null) return noProbe(facts);
+  const { expansion } = facts.probe;
+
+  if (expansion === null) {
+    return {
+      answer: 'N/A',
+      evidence: 'the preview could not be re-rendered with expanded text, so no bound was tested',
+    };
+  }
+  if (expansion.length === 0) {
+    return { answer: 'N/A', evidence: 'preview was not probed at any width' };
+  }
+
+  const widths = expansion.map((e) => e.width);
+  const expanded = expansion.filter((e) => e.textNodes > 0);
+  if (expanded.length === 0) {
+    // Settled, not "could not look": a component with no text cannot have a
+    // text-expansion failure, and asking a human to judge one would be
+    // asking about something that is not there.
+    return {
+      answer: 'N/A',
+      evidence: 'preview renders no text, so there is no text expansion to withstand',
+    };
+  }
+
+  const chars = Math.max(...expanded.map((e) => e.chars));
+
+  // Verdict order follows how much of the component each failure takes with
+  // it. Pushing the viewport sideways breaks the page around the component.
+  // Spilling out of a container breaks the component's own layout. Clipping
+  // keeps the layout and loses the words, which is the smallest of the three
+  // and still a No.
+  const overflowed = expansion.filter((e) => e.viewportOverflow);
+  if (overflowed.length > 0) {
+    const detail = overflowed
+      .slice(0, 4)
+      .map((e) => `${e.width}px: overflows by ${e.overflowBy}px`)
+      .join('; ');
+    return {
+      answer: 'No',
+      evidence:
+        `with text expanded by ~40%, content overflows the viewport at ${overflowed.length} ` +
+        `of ${widths.length} width(s) — ${detail}`,
+    };
+  }
+
+  const spilling = expansion.filter((e) => e.spilling.length > 0);
+  if (spilling.length > 0) {
+    const detail = spilling
+      .slice(0, 4)
+      .map((e) => `${e.width}px: ${e.spilling.slice(0, 3).join(', ')}`)
+      .join('; ');
+    return {
+      answer: 'No',
+      evidence:
+        `with text expanded by ~40%, content spills out of its container at ` +
+        `${spilling.length} of ${widths.length} width(s) — ${detail}`,
+    };
+  }
+
+  const clipped = expansion.filter((e) => e.clipped.length > 0);
+  if (clipped.length > 0) {
+    const detail = clipped
+      .slice(0, 4)
+      .map((e) => `${e.width}px: ${e.clipped.slice(0, 3).join(', ')}`)
+      .join('; ');
+    return {
+      answer: 'No',
+      evidence:
+        `with text expanded by ~40%, text is cut off with no declared limit at ` +
+        `${clipped.length} of ${widths.length} width(s) — no ellipsis, line clamp or max-* ` +
+        `says it may truncate: ${detail}`,
+    };
+  }
+
+  return {
+    answer: 'Yes',
+    evidence:
+      `${chars} character(s) of text expanded by ~40% with no overflow, spill or undeclared ` +
+      `truncation at ${widths.join(', ')}px`,
+  };
+}
+
 export const LIVE_CHECKS: Record<string, LiveCheck> = {
   'code.keyboard': checkKeyboardAccess,
   'code.breakpoints': checkBreakpoints,
   'code.states': checkStates,
   'code.screenreader': checkScreenReader,
+  'code.text-expansion': checkTextExpansion,
 };

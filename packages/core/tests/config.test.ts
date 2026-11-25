@@ -384,8 +384,12 @@ describe('metricKeys', () => {
     expect(keys.every((k) => k.includes(':'))).toBe(true);
     expect(keys.find((k) => k.startsWith('CO3:'))).toContain('code.keyboard');
     expect(keys.find((k) => k.startsWith('CO1:'))).toContain('code.states');
-    // A norm only a human can answer carries a null check, and says so.
-    expect(keys.find((k) => k.startsWith('CO10:'))).toContain('"code",null');
+    expect(keys.find((k) => k.startsWith('CO4:'))).toContain('code.screenreader');
+    expect(keys.find((k) => k.startsWith('CO10:'))).toContain('code.text-expansion');
+    // A norm only a human can answer carries a null check, and says so. DE2
+    // is the last one of those in the default set, which is why it is the
+    // example: CO10 used to be, until a pseudo-localized probe answered it.
+    expect(keys.find((k) => k.startsWith('DE2:'))).toContain('"design",null');
   });
 
   /**

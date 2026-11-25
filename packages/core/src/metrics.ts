@@ -133,9 +133,11 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     // — unnamed control, interaction with no role, a state the reader never
     // announces — are now found by machine. The clean case stays N/A: a
     // virtual AT cannot establish that a screen reader user can USE the
-    // component, which is what the guideline asks. Only real NVDA or
-    // VoiceOver can, and that is a second driver behind this same check id.
-    note: 'Answered from a virtual screen reader against the rendered preview',
+    // component, which is what the guideline asks. `params: { driver: "real" }`
+    // adds real VoiceOver, NVDA or Orca as corroboration, which is the only
+    // way this norm answers Yes — one check id, two drivers, because a second
+    // check would score CO4 twice.
+    note: 'Answered from a screen reader against the rendered preview',
     check: 'code.screenreader',
   },
   {

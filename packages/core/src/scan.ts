@@ -21,6 +21,7 @@ import {
 import { FigmaError, NoComponentsError } from './errors';
 import {
   LIVE_CHECKS,
+  requestedDriver,
   requestedWidths,
   type LiveAbsence,
   type LiveFacts,
@@ -186,6 +187,7 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
     previews = await probeLivePages(urls, opts.probeLive, widths, {
       ...(opts.previewConcurrency === undefined ? {} : { concurrency: opts.previewConcurrency }),
       logger,
+      request: { realScreenReader: wantsRealScreenReader(config) },
     });
   }
 
@@ -503,6 +505,20 @@ function loadPreview(
  * component), and probing one scale would leave the other reporting "not
  * probed at that width" forever.
  */
+/**
+ * Does any enabled screen-reader norm ask for real assistive technology?
+ *
+ * A union across norms, same as `breakpointWidths`, and for a blunter reason:
+ * the real reader drives the whole machine rather than one page, so it cannot
+ * be turned on per norm within a single run. One norm asking for it is
+ * enough, and the probe falls back per URL if it is not available.
+ */
+function wantsRealScreenReader(config: CurrentConfig): boolean {
+  return config.metrics.some(
+    (metric) => metric.check === 'code.screenreader' && requestedDriver(metric.params) === 'real',
+  );
+}
+
 function breakpointWidths(config: CurrentConfig): number[] {
   const all = new Set<number>();
   for (const metric of config.metrics) {

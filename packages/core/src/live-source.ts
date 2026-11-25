@@ -7,6 +7,7 @@ import {
   type ContrastFinding,
   type ContrastProbe,
   type ExpansionProbe,
+  type RealScreenReaderName,
   type ScreenReaderStop,
   type StateProbe,
 } from './live-checks';
@@ -16,8 +17,27 @@ export function isPreviewUrl(value: string): boolean {
   return /^https?:\/\//i.test(value.trim());
 }
 
-/** Probes one preview URL. Injected so tests never launch a browser. */
-export type PageProber = (url: string, widths: readonly number[]) => Promise<LiveProbe>;
+/** What one probe run may be asked for beyond the widths. */
+export interface ProbeRequest {
+  /**
+   * Drive the platform's own screen reader rather than the JavaScript one.
+   * Falls back to the virtual reader, with the reason recorded, wherever none
+   * is available — see `probeRealScreenReader`.
+   */
+  realScreenReader?: boolean;
+}
+
+/**
+ * Probes one preview URL. Injected so tests never launch a browser.
+ *
+ * `request` is optional so an existing prober keeps working unchanged: a
+ * function that takes two parameters satisfies a type that passes three.
+ */
+export type PageProber = (
+  url: string,
+  widths: readonly number[],
+  request?: ProbeRequest,
+) => Promise<LiveProbe>;
 
 export interface ProberOptions {
   logger?: Logger;
@@ -42,6 +62,14 @@ export interface ProberOptions {
    * which `checkContrast` reports as a clean N/A.
    */
   loadContrastEngine?: () => Promise<string | null>;
+  /**
+   * The guidepup module that drives real assistive technology, resolved
+   * lazily so `@guidepup/guidepup` stays optional too. Only ever called when
+   * a norm asked for `driver: "real"`.
+   */
+  loadRealScreenReader?: () => Promise<unknown>;
+  /** Injected so the platform gate can be tested off its own platform. */
+  platform?: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -1053,6 +1081,140 @@ const READER_SCRIPT = (
 `;
 
 /**
+ * Which real screen reader this machine could have, by platform.
+ *
+ * Guidepup drives VoiceOver on macOS, NVDA on Windows and Orca on Linux. The
+ * Linux entry is worth stating plainly because it is easy to find the
+ * opposite written down: this was filed on the understanding that there is no
+ * Linux support, which was true of earlier versions and is not true of
+ * `@guidepup/guidepup` 0.40. It does not make this a default check — Orca
+ * needs a desktop session with AT-SPI running, which a CI runner does not
+ * have — but the reason it cannot be a default is "no desktop session", not
+ * "no driver exists".
+ */
+const PLATFORM_READER: Readonly<Record<string, RealScreenReaderName>> = {
+  darwin: 'voiceover',
+  win32: 'nvda',
+  linux: 'orca',
+};
+
+/** The guidepup export name for each reader. */
+const READER_EXPORT: Readonly<Record<RealScreenReaderName, string>> = {
+  voiceover: 'voiceOver',
+  nvda: 'nvda',
+  orca: 'orca',
+};
+
+/** The shape of a guidepup screen reader, structurally typed. */
+interface RealScreenReader {
+  detect(): Promise<boolean>;
+  start(options?: Record<string, unknown>): Promise<void>;
+  stop(): Promise<void>;
+  next(): Promise<void>;
+  lastSpokenPhrase(): Promise<string>;
+}
+
+/**
+ * Walk the platform's own screen reader over the page as corroboration.
+ *
+ * Returns the reader's name if it completed a walk, or a reason it could not
+ * be used. It produces no findings, deliberately: see `ScreenReaderProbe`'s
+ * `verifiedBy`. Real assistive technology hands back spoken phrases with no
+ * node attached, so there is nothing to attribute a finding to, and a first
+ * draft that tried read `document` as a control with no name.
+ *
+ * What a completed walk does establish is that the real reader got through
+ * the page: it started, it moved, it announced something at each step, and it
+ * reached the end rather than stalling. That is the claim a virtual reader
+ * cannot make, and it is what turns CO4's clean case into a Yes.
+ *
+ * Every path out of here is a name or a reason, never an exception: a norm
+ * configured for real assistive technology and run on a machine without any
+ * must still get the answer the virtual reader can give, because losing CO4
+ * entirely is worse than getting the half of it that travels everywhere.
+ *
+ * Real assistive technology cannot be pointed at a headless page. It reads
+ * the focused window of the machine it runs on, which means the browser has
+ * to be visible and frontmost — so this is for a developer's own machine or a
+ * dedicated self-hosted runner, not for `ubuntu-latest`. That is the whole
+ * reason the norm defaults to the virtual driver.
+ */
+async function probeRealScreenReader(
+  loadReader: () => Promise<unknown>,
+  platform: string,
+  maxStops: number,
+  logger: Logger,
+): Promise<{ verifiedBy: RealScreenReaderName } | { reason: string }> {
+  const reader = PLATFORM_READER[platform];
+  if (reader === undefined) {
+    return {
+      reason:
+        `this platform (${platform}) has no screen reader guidepup can drive — ` +
+        'VoiceOver needs macOS, NVDA needs Windows, Orca needs Linux',
+    };
+  }
+
+  let at: RealScreenReader;
+  try {
+    const mod = (await loadReader()) as Record<string, unknown>;
+    const candidate = mod[READER_EXPORT[reader]] as RealScreenReader | undefined;
+    if (candidate === undefined || typeof candidate.start !== 'function') {
+      return { reason: 'the installed @guidepup/guidepup exposes no driver for this platform' };
+    }
+    at = candidate;
+  } catch {
+    return { reason: 'no real screen reader is installed — run `npm i -D @guidepup/guidepup`' };
+  }
+
+  // `detect()` is checked but not trusted on its own, because it is a
+  // platform test rather than an availability one. Measured on a Linux
+  // container with no Orca installed, `orca.detect()` returns true and
+  // `orca.start()` then throws "Orca is not installed". Hence both, and hence
+  // a first line of the message rather than a stack trace.
+  try {
+    if (!(await at.detect())) return { reason: `${reader} is not available on this machine` };
+  } catch (err) {
+    return { reason: `${reader} could not be detected: ${firstLine(err)}` };
+  }
+
+  try {
+    logger.trace(`preview: starting ${reader}`);
+    await at.start();
+  } catch (err) {
+    return { reason: `${reader} would not start: ${firstLine(err)}` };
+  }
+
+  try {
+    const heard = new Set<string>();
+    for (let i = 0; i < maxStops; i++) {
+      const phrase = (await at.lastSpokenPhrase()).trim();
+      // The walk wraps, so a repeat is the end of it — same termination rule
+      // as the virtual reader and as `walkTabStops`.
+      if (heard.has(phrase)) break;
+      heard.add(phrase);
+      await at.next();
+    }
+    if (heard.size === 0) {
+      return { reason: `${reader} started but announced nothing` };
+    }
+    logger.trace(`preview: ${reader} walked ${heard.size} announcement(s)`);
+    return { verifiedBy: reader };
+  } catch (err) {
+    return { reason: `${reader} stopped responding: ${firstLine(err)}` };
+  } finally {
+    await at.stop().catch(() => undefined);
+  }
+}
+
+/** An error's first line. A stack trace is not a message for a report. */
+function firstLine(err: unknown): string {
+  return String((err as Error).message ?? err)
+    .split('\n')[0]
+    .trim();
+}
+
+/**
+ * Run the virtual screen reader against an open page./**
  * Run the virtual screen reader against an open page.
  *
  * Every failure path returns null, which `checkScreenReader` reports as an
@@ -1119,6 +1281,13 @@ export function createPlaywrightProber(opts: ProberOptions = {}): PageProber {
   const maxStops = opts.maxTabStops ?? DEFAULT_MAX_TAB_STOPS;
   const maxStateTargets = opts.maxStateTargets ?? DEFAULT_MAX_STATE_TARGETS;
   const maxReaderStops = opts.maxReaderStops ?? DEFAULT_MAX_READER_STOPS;
+  const platform = opts.platform ?? process.platform;
+  const loadRealScreenReader =
+    opts.loadRealScreenReader ??
+    (async () => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      return require('@guidepup/guidepup') as unknown;
+    });
   const load =
     opts.load ??
     (async () => {
@@ -1173,7 +1342,7 @@ export function createPlaywrightProber(opts: ProberOptions = {}): PageProber {
     return browserPromise;
   };
 
-  const probe: PageProber & { close?: () => Promise<void> } = async (url, widths) => {
+  const probe: PageProber & { close?: () => Promise<void> } = async (url, widths, request) => {
     const b = await browser();
     const sorted = [...widths].sort((a, c) => a - c);
     // The keyboard walk runs at the widest width: a layout that hides
@@ -1235,10 +1404,35 @@ export function createPlaywrightProber(opts: ProberOptions = {}): PageProber {
           // measured — but it is also the one pass that evaluates a third
           // party's code in the page, and it goes after everything this tool
           // measures itself.
-          screenReader =
-            interactiveCount === 0
-              ? { stops: [], silent: [] }
-              : await probeScreenReader(page, loadScreenReader, maxReaderStops, logger);
+          if (interactiveCount === 0) {
+            screenReader = { stops: [], silent: [] };
+          } else {
+            // The virtual reader always runs: it is the only one that can
+            // attribute a finding to an element. A real one is asked for on
+            // top of it, as corroboration of a clean read.
+            const virtual = await probeScreenReader(
+              page,
+              loadScreenReader,
+              maxReaderStops,
+              logger,
+            );
+            if (virtual !== null && request?.realScreenReader === true) {
+              const real = await probeRealScreenReader(
+                loadRealScreenReader,
+                platform,
+                maxReaderStops,
+                logger,
+              );
+              if ('verifiedBy' in real) {
+                screenReader = { ...virtual, verifiedBy: real.verifiedBy };
+              } else {
+                logger.trace(`preview: real screen reader not used — ${real.reason}`);
+                screenReader = { ...virtual, fallbackReason: real.reason };
+              }
+            } else {
+              screenReader = virtual;
+            }
+          }
           // Contrast is a property of the resting page, so it goes before the
           // text is touched and after the pointer states are released. At one
           // width only: the engine's bundle is two thirds of a megabyte and a
@@ -1349,7 +1543,7 @@ export async function probeLivePages(
   urls: readonly string[],
   prober: PageProber,
   widths: readonly number[],
-  opts: { concurrency?: number; logger?: Logger } = {},
+  opts: { concurrency?: number; logger?: Logger; request?: ProbeRequest } = {},
 ): Promise<Map<string, ProbedPage>> {
   const logger = opts.logger ?? silentLogger;
   const unique = [...new Set(urls)];
@@ -1367,7 +1561,7 @@ export async function probeLivePages(
     while (next < unique.length) {
       const url = unique[next++];
       try {
-        out.set(url, { probe: await prober(url, widths) });
+        out.set(url, { probe: await prober(url, widths, opts.request) });
       } catch (err) {
         // One preview failing must not abandon the rest — a pool, not
         // Promise.all, for the same reason as renderDocsPages.

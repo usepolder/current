@@ -321,7 +321,140 @@ for (const suite of SUITES) {
 }
 
 await core.closeProber(prober);
+
+/**
+ * CO4's real-assistive-technology driver.
+ *
+ * Separate from the suites above because each case needs its own prober
+ * options rather than its own page. The screen reader is faked; the page, the
+ * browser and every line of wiring between them is real, which is the part
+ * worth testing — the platform gate, the detect-then-start split, the
+ * fall-back, and the verdict difference that is the whole point of the
+ * driver.
+ *
+ * It is NOT a test of VoiceOver, NVDA or Orca. Driving those needs macOS,
+ * Windows, or a Linux desktop session with AT-SPI, and none of that exists on
+ * a CI runner or in the container this was written in. What the real readers
+ * do when they run is unverified here and says so.
+ */
+const REAL_AT_CASES = [
+  {
+    name: 'unsupported platform',
+    platform: 'freebsd',
+    load: async () => {
+      throw new Error('should not be reached');
+    },
+    want: { verifiedBy: undefined, reason: 'freebsd' },
+  },
+  {
+    name: 'guidepup not installed',
+    platform: 'linux',
+    load: async () => {
+      throw new Error("Cannot find module '@guidepup/guidepup'");
+    },
+    want: { verifiedBy: undefined, reason: '@guidepup/guidepup' },
+  },
+  {
+    name: 'detect() says no',
+    platform: 'win32',
+    load: async () => ({
+      nvda: { detect: async () => false, start: async () => {}, stop: async () => {} },
+    }),
+    want: { verifiedBy: undefined, reason: 'not available' },
+  },
+  {
+    // Measured on this container: orca.detect() returns TRUE and orca.start()
+    // then throws "Orca is not installed". detect() is a platform test, not
+    // an availability one, which is why the gate checks both.
+    name: 'detect() yes, start() no',
+    platform: 'linux',
+    load: async () => ({
+      orca: {
+        detect: async () => true,
+        start: async () => {
+          throw new Error('Orca is not installed\n\nPlease ensure you have run:\n  apt install orca');
+        },
+        stop: async () => {},
+      },
+    }),
+    want: { verifiedBy: undefined, reason: 'would not start: Orca is not installed' },
+  },
+  {
+    name: 'a reader that completes its walk',
+    platform: 'win32',
+    load: async () => {
+      const phrases = ['document', 'button, Save changes', 'link, Docs', 'end of document'];
+      let i = 0;
+      return {
+        nvda: {
+          detect: async () => true,
+          start: async () => {},
+          stop: async () => {},
+          next: async () => {
+            i = Math.min(i + 1, phrases.length - 1);
+          },
+          lastSpokenPhrase: async () => phrases[i],
+        },
+      };
+    },
+    want: { verifiedBy: 'nvda' },
+  },
+  {
+    name: 'a reader that dies mid-walk',
+    platform: 'darwin',
+    load: async () => ({
+      voiceOver: {
+        detect: async () => true,
+        start: async () => {},
+        stop: async () => {},
+        next: async () => {
+          throw new Error('VoiceOver stopped');
+        },
+        lastSpokenPhrase: async () => 'button, Save changes',
+      },
+    }),
+    want: { verifiedBy: undefined, reason: 'stopped responding' },
+  },
+];
+
+console.log('\nCO4  real-AT driver (the readers are faked; the page and the wiring are not)');
+const realAtUrl = `${base}/${SUITES[0].cases.findIndex((c) => c[0] === 'named controls')}`;
+const co4 = core.LIVE_CHECKS['code.screenreader'];
+
+for (const c of REAL_AT_CASES) {
+  const p = core.createPlaywrightProber({
+    logger: { trace: (m) => verbose && console.log(`        trace: ${m}`) },
+    platform: c.platform,
+    loadRealScreenReader: c.load,
+  });
+  const probe = await p(realAtUrl, [1280], { realScreenReader: true });
+  await core.closeProber(p);
+  const sr = probe.screenReader;
+  const result = co4({ componentName: 'Fixture', probe, absence: null });
+
+  let ok = sr !== null && sr.verifiedBy === c.want.verifiedBy;
+  if (ok && c.want.reason !== undefined) {
+    // A reason, not a stack trace: one line, and it names the cause.
+    ok =
+      String(sr.fallbackReason ?? '').includes(c.want.reason) &&
+      !String(sr.fallbackReason ?? '').includes('\n');
+  }
+  // Findings always come from the virtual reader, so a corroborated run and a
+  // fallen-back run must agree on what they found. The page is the four-control
+  // `named controls` fixture, so four is the number either way — if a real
+  // reader's walk ever leaked into the findings, this is what would catch it.
+  if (ok) ok = sr.stops.length === 4;
+  if (!ok) failed++;
+  console.log(`  ${ok ? 'pass' : 'FAIL'}  ${c.name.padEnd(26)} ${result.answer.padEnd(4)}`);
+  if (!ok || verbose) {
+    console.log(`        verifiedBy=${sr?.verifiedBy} stops=${sr?.stops.length}`);
+    if (sr?.fallbackReason) console.log(`        reason=${JSON.stringify(sr.fallbackReason)}`);
+    if (!ok) console.log(`        wanted ${JSON.stringify(c.want)}`);
+  }
+}
+
 server.close();
 
-console.log(failed === 0 ? `\nall ${ALL.length} fixtures pass` : `\n${failed} FAILED`);
+const total = ALL.length + REAL_AT_CASES.length;
+console.log(failed === 0 ? `\nall ${total} fixtures pass` : `\n${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);

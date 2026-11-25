@@ -94,6 +94,10 @@ export {
   checkTextExpansion,
   checkContrast,
   requestedWidths,
+  requestedDriver,
+  REAL_SCREEN_READERS,
+  SCREEN_READER_DRIVERS,
+  DRIVER_KEY,
   DEFAULT_BREAKPOINT_WIDTHS,
   PROBE_VIEWPORT_HEIGHT,
   WIDTHS_KEY,
@@ -109,6 +113,7 @@ export {
   type ExpansionProbe,
   type ContrastProbe,
   type ContrastFinding,
+  type RealScreenReaderName,
 } from './live-checks';
 export {
   isPreviewUrl,
@@ -126,6 +131,7 @@ export {
   type PageProber,
   type ProberOptions,
   type ProbedPage,
+  type ProbeRequest,
   type ReaderReading,
 } from './live-source';
 export {

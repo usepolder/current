@@ -142,11 +142,29 @@ export interface ScreenReaderStop {
 }
 
 /**
- * What the virtual screen reader made of one preview.
+ * A real screen reader, as opposed to the JavaScript one.
  *
- * `null` on `LiveProbe.screenReader` is "we could not look" — the reader is
- * not installed, or the page would not take it — which is an N/A. An empty
- * `stops` array is different: the reader ran and found nothing interactive
+ * VoiceOver on macOS, NVDA on Windows, Orca on Linux — the three
+ * `@guidepup/guidepup` can drive. The Linux entry is worth stating plainly
+ * because it is easy to find the opposite written down: this was filed on the
+ * understanding that guidepup has no Linux support, which was true of earlier
+ * versions and is not true of 0.40.
+ */
+export type RealScreenReaderName = 'voiceover' | 'nvda' | 'orca';
+
+/** Every real assistive technology this tool can be corroborated by. */
+export const REAL_SCREEN_READERS: readonly RealScreenReaderName[] = [
+  'voiceover',
+  'nvda',
+  'orca',
+];
+
+/**
+ * What a screen reader made of one preview.
+ *
+ * `null` on `LiveProbe.screenReader` is "we could not look" — no reader is
+ * installed, or the page would not take one — which is an N/A. An empty
+ * `stops` array is different: a reader ran and found nothing interactive
  * to announce.
  */
 export interface ScreenReaderProbe {
@@ -157,6 +175,36 @@ export interface ScreenReaderProbe {
    * Usually `aria-hidden` over something a pointer can still reach.
    */
   silent: string[];
+  /**
+   * The real screen reader that walked the same page without anomalies, if
+   * one was asked for and was available.
+   *
+   * This is the ONLY thing that lets CO4 answer Yes, and it is deliberately
+   * separate from `stops`. The findings always come from the virtual reader,
+   * because they need a DOM handle: an announcement has to be attributed to
+   * an interactive element before "this control has no name" means anything.
+   * Real assistive technology reads the machine's focused window and hands
+   * back spoken phrases with no node attached, so a walk of it announces
+   * headings, body text, landmarks and `end of document` indistinguishably
+   * from controls. Scoring findings off that produced exactly what you would
+   * expect: `document` read as a nameless control, every paragraph read as an
+   * element with no role.
+   *
+   * So the two drivers do different jobs rather than the same job twice. The
+   * virtual one finds defects. The real one corroborates a clean read, which
+   * is the half a virtual reader structurally cannot establish and the whole
+   * reason to pay for a Windows or macOS runner.
+   */
+  verifiedBy?: RealScreenReaderName;
+  /**
+   * Why a real screen reader was not used, when one was asked for.
+   *
+   * Not using one is deliberately not a failure: a norm configured for real
+   * assistive technology, run on a machine that has none, must still get the
+   * answer the virtual reader can give rather than losing the metric. The
+   * reason travels with the result so the report can say what it got.
+   */
+  fallbackReason?: string;
 }
 
 /**
@@ -279,6 +327,29 @@ export type LiveCheck = (facts: LiveFacts, params?: Params) => CheckResult;
 
 /** `params: { widths: [...] }` on a breakpoints norm. */
 export const WIDTHS_KEY = 'widths';
+
+/** The params key a CO4-style norm picks its screen reader with. */
+export const DRIVER_KEY = 'driver';
+
+/**
+ * What `params: { driver: ... }` may say.
+ *
+ * `virtual` is the default and runs anywhere. `real` asks for the platform's
+ * own assistive technology — VoiceOver on macOS, NVDA on Windows, Orca on
+ * Linux — and falls back to the virtual reader, with the reason recorded,
+ * wherever that is not available.
+ *
+ * Deliberately not the name of a specific reader. A config that said `nvda`
+ * would be unanswerable on every machine that is not Windows, and the choice
+ * of reader is not a judgment a rubric should be making: it is whatever the
+ * machine running the audit has.
+ */
+export const SCREEN_READER_DRIVERS: readonly string[] = ['virtual', 'real'];
+
+/** The driver a norm asked for, or the default. Validated in config.ts. */
+export function requestedDriver(params?: Params): 'virtual' | 'real' {
+  return params?.[DRIVER_KEY] === 'real' ? 'real' : 'virtual';
+}
 
 /**
  * Widths probed when a norm names none.
@@ -561,15 +632,38 @@ export function checkStates(facts: LiveFacts): CheckResult {
  * attribute is in the markup, the intent is obvious, and none of it is
  * audible. See `STATE_ATTRIBUTES` for the measurements.
  *
- * The clean case is **N/A and never Yes**, for the same reason `checkStates`
- * is: the metric asks whether a screen reader user can *use* the component,
- * and a virtual reader walking a tree cannot establish that. Guidepup's own
- * virtual reader says it is not a substitute for testing with real
- * assistive technology. Announcing Yes off it would be this tool claiming a
- * verdict it did not earn, which is the failure mode #1 and #3 were about.
- * Real NVDA and VoiceOver are the only thing that can turn that N/A into a
- * Yes; that is #33, a second driver behind this same check id, off by
- * default because it needs a Windows or macOS runner.
+ * The clean case is **N/A and never Yes on the virtual driver**, for the same
+ * reason `checkStates` is: the metric asks whether a screen reader user can
+ * *use* the component, and a virtual reader walking a tree cannot establish
+ * that. Guidepup's own virtual reader says it is not a substitute for testing
+ * with real assistive technology. Announcing Yes off it would be this tool
+ * claiming a verdict it did not earn, which is the failure mode #1 and #3
+ * were about.
+ *
+ * Real assistive technology can earn it, and that is the one thing a Yes here
+ * means: `params: { driver: "real" }` also drives VoiceOver, NVDA or Orca
+ * through `@guidepup/guidepup`, and a clean walk from one of those is the
+ * evidence the guideline actually asks for. One check id, two drivers — a
+ * second check would have scored CO4 twice, which is the DE11/CO12
+ * duplication #29 spent its time unwinding.
+ *
+ * The two drivers do DIFFERENT jobs, and that split was forced by what each
+ * one can see. Findings need a DOM handle, because an announcement has to be
+ * attributed to an interactive element before "this control has no name"
+ * means anything; real assistive technology reads the machine's focused
+ * window and returns spoken phrases with no node attached. A first draft
+ * scored findings off the real reader and produced exactly what that implies:
+ * `document` read as a nameless control and every paragraph of body text read
+ * as an element with no role. So the virtual reader finds defects and the
+ * real one corroborates a clean read, which is the half a virtual reader
+ * structurally cannot establish.
+ *
+ * Asking for a real driver on a machine that has none is NOT a failure. The
+ * virtual reader answers instead and the evidence says why, because losing
+ * the metric entirely would be worse than getting the half of it that
+ * travels everywhere. It does mean two teams running the same rubric can
+ * have materially different confidence behind the same CO4 column, so the
+ * evidence always names the reader that produced it.
  *
  * Verdict order follows what each failure costs. An unnamed control is the
  * worst: the user cannot tell what it is. A missing role is next: the user
@@ -653,14 +747,44 @@ export function checkScreenReader(facts: LiveFacts): CheckResult {
           .join(', ')}) — check whether that is deliberate`
       : '';
 
+  // The only path to a Yes. A real screen reader walking the same page
+  // without anomalies is the evidence the guideline asks for; a virtual one
+  // reading a tree is not, however clean the read.
+  if (screenReader.verifiedBy !== undefined) {
+    return {
+      answer: 'Yes',
+      evidence:
+        `every one of the ${stops.length} interactive element(s) announces a role and a name, ` +
+        `and ${readerName(screenReader.verifiedBy)} walked the same page without anomalies` +
+        `${hidden}`,
+    };
+  }
+
+  const asked =
+    screenReader.fallbackReason === undefined
+      ? ''
+      : ` — a real screen reader was asked for and ${screenReader.fallbackReason}`;
+
   return {
     answer: 'N/A',
     evidence:
-      `all ${stops.length} interactive element(s) announce a role and a name` +
-      `${hidden} — whether a screen reader user can actually complete the task is a ` +
-      "human's call, or #33's real NVDA/VoiceOver run",
+      `the virtual screen reader found a role and a name on all ${stops.length} interactive ` +
+      `element(s)${hidden}${asked}; whether a screen reader user can actually complete the ` +
+      'task needs real assistive technology, or a human',
     needsHuman: true,
   };
+}
+
+/** How a real reader's name reads in evidence. */
+function readerName(reader: RealScreenReaderName): string {
+  switch (reader) {
+    case 'voiceover':
+      return 'VoiceOver';
+    case 'nvda':
+      return 'NVDA';
+    default:
+      return 'Orca';
+  }
 }
 
 /** `<button> "Save"` for each, capped. Phrase-aware: names what was heard. */

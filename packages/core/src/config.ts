@@ -3,7 +3,13 @@ import * as yaml from 'js-yaml';
 import { isDocsUrl } from './docs-source';
 import { ConfigValidationError, ParseError, PathTraversalError } from './errors';
 import { CODE_CHECKS } from './code-checks';
-import { DEFAULT_BREAKPOINT_WIDTHS, LIVE_CHECKS, WIDTHS_KEY } from './live-checks';
+import {
+  DEFAULT_BREAKPOINT_WIDTHS,
+  DRIVER_KEY,
+  LIVE_CHECKS,
+  SCREEN_READER_DRIVERS,
+  WIDTHS_KEY,
+} from './live-checks';
 import { isPreviewUrl } from './live-source';
 import {
   DEFAULT_INTERACTION_STATES,
@@ -161,7 +167,8 @@ type ParamSpec =
   | { kind: 'strings'; key: 'headings' | 'text' }
   | { kind: 'percent'; key: typeof MIN_BOUND_KEY; default: number }
   | { kind: 'widths'; key: typeof WIDTHS_KEY; default: readonly number[] }
-  | { kind: 'states'; key: typeof STATES_KEY; default: readonly string[] };
+  | { kind: 'states'; key: typeof STATES_KEY; default: readonly string[] }
+  | { kind: 'enum'; key: typeof DRIVER_KEY; allowed: readonly string[]; default: string };
 
 /** Yes requires this share of relevant layers to bind a token. */
 const MIN_BOUND_SPEC: ParamSpec = {
@@ -187,6 +194,18 @@ const STATES_SPEC: ParamSpec = {
   default: DEFAULT_INTERACTION_STATES,
 };
 
+/**
+ * Which screen reader a CO4-style norm asks for. Optional: `virtual` runs
+ * anywhere, which is why it is the default rather than a choice every adopter
+ * has to make.
+ */
+const DRIVER_SPEC: ParamSpec = {
+  kind: 'enum',
+  key: DRIVER_KEY,
+  allowed: SCREEN_READER_DRIVERS,
+  default: 'virtual',
+};
+
 /** The checks a norm may name, and the `params` each takes. */
 const CHECK_PARAM: Record<string, ParamSpec> = {
   ...Object.fromEntries(Object.keys(CODE_CHECKS).map((id) => [id, null])),
@@ -201,6 +220,7 @@ const CHECK_PARAM: Record<string, ParamSpec> = {
   'design.radius-tokens': MIN_BOUND_SPEC,
   'code.breakpoints': WIDTHS_SPEC,
   'design.interaction-states': STATES_SPEC,
+  'code.screenreader': DRIVER_SPEC,
 };
 
 /** A check only sees its own source, so its id has to match the axis it scores. */
@@ -309,6 +329,28 @@ function parseCheck(
     }
     const widths = [...new Set(list as number[])].sort((a, b) => a - b);
     return { check, params: { [spec.key]: widths } };
+  }
+
+  if (spec.kind === 'enum') {
+    // Optional, like the rest: the check ships a default that works anywhere.
+    if (entry.params === undefined) return { check };
+    const params = entry.params;
+    const value = isPlainObject(params) ? params[spec.key] : undefined;
+    if (
+      !isPlainObject(params) ||
+      Object.keys(params).some((k) => k !== spec.key) ||
+      typeof value !== 'string' ||
+      !spec.allowed.includes(value.trim().toLowerCase())
+    ) {
+      throw new ConfigValidationError(
+        `${where}: check "${check}" takes params: { ${spec.key}: ` +
+          `${spec.allowed.map((v) => `"${v}"` ).join(' | ')} }. Default "${spec.default}". ` +
+          '"real" drives the platform\'s own screen reader (VoiceOver on macOS, NVDA on ' +
+          'Windows, Orca on Linux) and is the only way this norm answers Yes; it falls back ' +
+          'to "virtual" wherever none is installed.',
+      );
+    }
+    return { check, params: { [spec.key]: value.trim().toLowerCase() } };
   }
 
   if (spec.kind === 'states') {

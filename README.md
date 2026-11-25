@@ -271,9 +271,26 @@ components:
 
 **CO1 never answers `Yes`.** Three of the nine states it lists can be forced on a rendered element. Loading, selected, active, error and disabled need the component driven through its props, which one URL cannot do — and *which* states a given component needs is the judgment the metric is really asking for. So a clean probe is an `N/A` that says what it verified, and a human answer in `.polder.answers.yml` still settles the norm. The probe's job is to catch the component that ships without a hover state, not to certify one that has every state. So an unsettled CO1 stays in the questions `current export` writes out, with what the probe did see in its evidence column — a `No` is the machine's own finding and leaves the list. Native form fields (`input`, `textarea`, `select`) are judged on focus alone, since the platform styles them and a text box signals by focusing, not by lighting up under the pointer.
 
-**CO4 never answers `Yes` either**, and the reason is worth being exact about: this check can prove a component is *not* screen-reader accessible and cannot prove it is. A virtual reader walking a tree establishes that the names, roles and states are there; whether a screen reader user can actually complete the task is a different claim, and Guidepup's own virtual reader says it is not a substitute for real assistive technology. So a clean read is an `N/A` listing what it verified. Only real NVDA or VoiceOver can turn that into a `Yes`, and that needs a Windows or macOS runner — a second driver behind this same check, off by default.
+**CO4 answers `Yes` only from real assistive technology**, and the reason is worth being exact about: a virtual reader can prove a component is *not* screen-reader accessible and cannot prove it is. It establishes that the names, roles and states are there; whether a screen reader user can actually complete the task is a different claim, and Guidepup's own virtual reader says it is not a substitute for real assistive technology. So a clean read on its own is an `N/A` listing what it verified.
 
-It is an **optional** dependency, resolved lazily like the browser: not installed, and CO4 reports `N/A` with the install hint. In the Action it is fetched on demand (pinned, no install scripts) the first time a preview needs it, and if that fetch fails the norm reports `N/A` with a warning rather than failing the run.
+To earn the `Yes`, ask for the real thing:
+
+```yaml
+current:
+  metrics:
+    override:
+      CO4: { params: { driver: real } }   # default: virtual
+```
+
+That drives the platform's own screen reader through [`@guidepup/guidepup`](https://github.com/guidepup/guidepup) — **VoiceOver** on macOS, **NVDA** on Windows, **Orca** on Linux — over the same page, and a walk it completes without anomalies is what turns a clean read into a `Yes`.
+
+The two drivers do **different jobs**, and the split is forced by what each one can see. Findings need a DOM handle, because an announcement has to be attributed to an interactive element before "this control has no name" means anything — and real assistive technology reads the machine's focused window, handing back spoken phrases with no node attached. So the virtual reader always runs and always produces the findings; the real one corroborates a clean read and produces none. (An earlier draft scored findings off the real reader and reported `document` as a nameless control and every paragraph of body text as an element with no role.)
+
+**It is off by default because it cannot work on a hosted runner.** Real assistive technology reads the focused window of the machine it runs on, so the browser has to be visible and frontmost. That means your own machine or a dedicated self-hosted runner, not `ubuntu-latest` — and it is why the Action does not fetch it on demand the way it fetches the browser and the virtual reader. Install it yourself where you want it: `npm i -D @guidepup/guidepup`.
+
+Asking for a real reader where there is none is **not** a failure. The virtual reader answers instead and the evidence says why: `a real screen reader was asked for and orca would not start: Orca is not installed`. Losing the metric would be worse than getting the half of it that travels everywhere. It does mean two teams on the same rubric can have different confidence behind the same CO4 column, so the evidence always names what produced the answer.
+
+The virtual reader is an **optional** dependency, resolved lazily like the browser: not installed, and CO4 reports `N/A` with the install hint. In the Action it is fetched on demand (pinned, no install scripts) the first time a preview needs it, and if that fetch fails the norm reports `N/A` with a warning rather than failing the run.
 
 **CO10 is the first of these with a real `Yes`**, and it is worth saying why that is defensible where CO1's and CO4's would not be. "Does this component hold at 40% more text" is an objective question with an observable answer; "are all the necessary states present" and "can a screen reader user succeed" are not. It still claims only what it measured: that bounds exist and hold, never that they are the *right* bounds. It says nothing about whether the component is translated, translatable or RTL-safe — mirroring is a different norm, not a quiet extension of this one — and nothing about text a consumer passes in, which is part of why the expansion is proportional to the text that is actually there.
 
@@ -399,7 +416,8 @@ The checks a norm can name:
 | `code.forbids` | the component's source contains none of these | `text: [...]` |
 | `code.aria-attributes`, `code.text-alternatives`, `code.token-usage`, `code.semantic-name`, `code.figma-prop-parity`, `code.figma-connect` | as in [the metrics](#the-metrics) | none |
 | `design.color-tokens`, `design.type-tokens`, `design.spacing-tokens`, `design.radius-tokens` | as in [the metrics](#the-metrics) | `min_bound: 100` (optional) |
-| `code.keyboard`, `code.states`, `code.screenreader` | as in [a rendered preview](#4-point-at-a-rendered-preview-optional) — the first two and the third never answer `Yes` | none |
+| `code.keyboard`, `code.states` | as in [a rendered preview](#4-point-at-a-rendered-preview-optional) — `code.states` never answers `Yes` | none |
+| `code.screenreader` | a real screen reader walked the page and the virtual one found no defect; `virtual` alone never answers `Yes` | `driver: "virtual" \| "real"` (optional) |
 | `code.breakpoints` | nothing overflows the viewport at any of these widths | `widths: [320, 375, 768, 1024, 1280, 1920]` (optional) |
 | `code.text-expansion` | the layout holds with every word grown ~40% | the widths from `code.breakpoints` |
 | `code.contrast` | every text element meets the WCAG AA ratio for its size | none |
@@ -535,7 +553,9 @@ npm test
 npm run current -- <path-to-design-system>
 ```
 
-`npm test` launches no browser, by design: every test injects a fake prober, so CI needs no browser binary. That leaves the preview checks — CO1, CO3, CO4 and CO6 — with the one part of their correctness that lives outside TypeScript, since their findings depend on what Chromium builds and, for CO4, on what a third-party screen reader says about it. `scripts/probe-fixtures.mjs` covers that gap against real HTML in a real browser, and it is not decoration: it caught two CO4 bugs that every local test passed. Run it after touching anything on the probe path.
+`npm test` launches no browser, by design: every test injects a fake prober, so CI needs no browser binary. That leaves the preview checks — CO1, CO3, CO4, CO6, CO10 and CO13 — with the one part of their correctness that lives outside TypeScript, since their findings depend on what Chromium builds and, for CO4 and CO13, on what a third-party engine says about it. `scripts/probe-fixtures.mjs` covers that gap against real HTML in a real browser, and it is not decoration: it caught two CO4 bugs and three silently unstyled CO10 fixtures that every local test passed. Run it after touching anything on the probe path.
+
+One thing it does **not** cover: CO4's `driver: real` is exercised with the screen readers faked. Driving VoiceOver, NVDA or Orca for real needs a desktop session, so the gate, the fall-back and the verdict are tested and the readers themselves are not.
 
 ```sh
 npm i -D playwright && npx playwright install chromium

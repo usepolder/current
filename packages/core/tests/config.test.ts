@@ -5,7 +5,9 @@ import {
   ParseError,
   PathTraversalError,
   DEFAULT_METRICS,
+  type MetricDef,
   metricKeys,
+  metricsHash,
   parseConfig,
   resolveComponentPaths,
   resolveRepoPath,
@@ -375,8 +377,42 @@ describe('customising the norms', () => {
 });
 
 describe('metricKeys', () => {
-  it('is the bare id for every unmodified default, so existing history stays comparable', () => {
-    expect(metricKeys(DEFAULT_METRICS)).toEqual(DEFAULT_METRICS.map((m) => m.id));
+  it('carries what each metric measures, not just which ones are enabled', () => {
+    const keys = metricKeys(DEFAULT_METRICS);
+    expect(keys).toHaveLength(DEFAULT_METRICS.length);
+    // Every key names its metric and encodes its category + check + params.
+    expect(keys.every((k) => k.includes(':'))).toBe(true);
+    expect(keys.find((k) => k.startsWith('CO3:'))).toContain('code.keyboard');
+    expect(keys.find((k) => k.startsWith('CO1:'))).toContain('null');
+  });
+
+  /**
+   * The gap this closes. A rubric change shipped by Current itself — a norm
+   * going from "a human answers this" to "a browser probes it" — used to be
+   * invisible, because a metric matching the shipped default contributed only
+   * its bare id. The hash has to move, or the trend line joins a hand-audited
+   * score to a probed one as if they measured the same thing.
+   */
+  it('changes when a built-in default changes what it checks', () => {
+    const before: MetricDef[] = [
+      { id: 'CO3', category: 'code', subcategory: 'A11y', guideline: 'keyboard', check: null },
+    ];
+    const after: MetricDef[] = [{ ...before[0], check: 'code.keyboard' }];
+    expect(metricKeys(before)).not.toEqual(metricKeys(after));
+    expect(metricsHash(metricKeys(before))).not.toBe(metricsHash(metricKeys(after)));
+  });
+
+  it('changes when a default gains params, e.g. a breakpoints scale', () => {
+    const base: MetricDef = {
+      id: 'CO6',
+      category: 'code',
+      subcategory: 'Responsiveness',
+      guideline: 'breakpoints',
+      check: 'code.breakpoints',
+    };
+    expect(metricsHash(metricKeys([base]))).not.toBe(
+      metricsHash(metricKeys([{ ...base, params: { widths: [320, 768] } }])),
+    );
   });
 
   it('marks a norm whose check params changed, and one that was added', () => {
@@ -387,16 +423,20 @@ describe('metricKeys', () => {
       ),
     );
     const keys = metricKeys(cfg.metrics);
-    expect(keys.find((k) => k.startsWith('DO2'))).toMatch(/^DO2:/);
-    expect(keys.find((k) => k.startsWith('ORG1'))).toMatch(/^ORG1:/);
-    expect(keys.filter((k) => !k.includes(':'))).toHaveLength(31);
+    const defaults = metricKeys(DEFAULT_METRICS);
+    expect(keys.find((k) => k.startsWith('DO2:'))).not.toBe(
+      defaults.find((k) => k.startsWith('DO2:')),
+    );
+    expect(keys.find((k) => k.startsWith('ORG1:'))).toBeDefined();
+    // Nothing else moved: the other 31 defaults keep their keys.
+    expect(keys.filter((k) => defaults.includes(k))).toHaveLength(DEFAULT_METRICS.length - 1);
   });
 
   it('does not change when only the wording changes', () => {
     const cfg = parseConfig(
       polder(`${MINIMAL}\nmetrics:\n  override:\n    DO2: { guideline: Reworded, note: n }\n`),
     );
-    expect(metricKeys(cfg.metrics)).toEqual(DEFAULT_METRICS.map((m) => m.id));
+    expect(metricKeys(cfg.metrics)).toEqual(metricKeys(DEFAULT_METRICS));
   });
 
   it('does not change when a heading list is merely reordered', () => {
@@ -407,7 +447,17 @@ describe('metricKeys', () => {
 
   it('marks a built-in flipped to manual, since its score now means something else', () => {
     const cfg = parseConfig(polder(`${MINIMAL}\nmetrics:\n  manual: [CO2]\n`));
-    expect(metricKeys(cfg.metrics).find((k) => k.startsWith('CO2'))).toMatch(/^CO2:/);
+    const defaults = metricKeys(DEFAULT_METRICS);
+    expect(metricKeys(cfg.metrics).find((k) => k.startsWith('CO2:'))).not.toBe(
+      defaults.find((k) => k.startsWith('CO2:')),
+    );
+  });
+
+  it('does not change when a norm is disabled — its key simply leaves the set', () => {
+    const cfg = parseConfig(polder(`${MINIMAL}\nmetrics:\n  disable: [CO3]\n`));
+    const keys = metricKeys(cfg.metrics);
+    expect(keys.some((k) => k.startsWith('CO3:'))).toBe(false);
+    expect(metricsHash(keys)).not.toBe(metricsHash(metricKeys(DEFAULT_METRICS)));
   });
 });
 

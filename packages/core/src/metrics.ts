@@ -329,16 +329,26 @@ function measures(m: MetricDef): string {
 /**
  * One key per metric, for fingerprinting the rubric behind a score.
  *
- * A metric that is exactly the default contributes its bare id, so history
- * recorded before norms were customisable keeps its fingerprint. One that was
- * added, or changed in what it checks (its check, its params, its category),
- * contributes its id plus that — otherwise editing DO2's headings would move
- * every score while the trend line joined the two sides as if nothing changed.
- * Rewording a guideline changes no score and so changes no key.
+ * Every key carries what its metric measures — its category, its check and
+ * that check's params. Rewording a guideline, a note or a subcategory changes
+ * no score and so changes no key, and a reordered heading list is not a new
+ * rubric either (see `stable`).
+ *
+ * This used to emit a BARE id for any metric matching the shipped default, to
+ * keep fingerprints stable for history recorded before norms were
+ * customisable. That had the fingerprint describe *which* norms were enabled
+ * rather than what they measure, and it left one kind of rubric change
+ * invisible: the kind Current itself ships. When CO3 went from "a human
+ * answers this" to "a browser probes it", every config using the default
+ * produced the same bare `CO3` before and after, so the trend line joined a
+ * hand-audited score to a probed one as though they were the same measurement.
+ * They are not, and the line now breaks there.
+ *
+ * The cost is one break per repo at the upgrade that introduced this, plus one
+ * on any later release that changes what a built-in checks. That is the honest
+ * reading: the rubric did change, and a visible reset beats a continuous line
+ * through two different measurements.
  */
 export function metricKeys(metrics: readonly MetricDef[]): string[] {
-  return metrics.map((m) => {
-    const base = DEFAULT_METRICS_BY_ID.get(m.id);
-    return base !== undefined && measures(base) === measures(m) ? m.id : `${m.id}:${measures(m)}`;
-  });
+  return metrics.map((m) => `${m.id}:${measures(m)}`);
 }

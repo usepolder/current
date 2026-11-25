@@ -164,8 +164,10 @@ async function run(): Promise<void> {
     const currentHash = entryFromReport(report, metricKeys(config.metrics)).metricsHash;
     if (previous.metricsHash !== currentHash) {
       core.warning(
-        'Current: the metric set changed since the last recorded scan, so the delta compares ' +
-          'two different rubrics. Treat it as a reset, not a regression.',
+        'Current: the rubric changed since the last recorded scan — a norm was added, ' +
+          'removed, re-tuned or flipped between manual and automated, or Current itself was ' +
+          'upgraded to check something differently. The delta compares two different rubrics, ' +
+          'so treat it as a reset, not a regression.',
       );
     }
   }

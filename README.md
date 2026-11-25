@@ -359,7 +359,7 @@ Things worth knowing:
 - **`override` replaces, it does not extend.** Setting `params` swaps the whole list, so to add one heading to DO2 you repeat the defaults. Setting `check` without `params` on a check that needs them is an error.
 - **`override` changes what a built-in checks, not how it is scored.** You can reword it, re-tune its params, or point it at a different check. To move a norm to another category, disable it and add a custom one.
 - **Typos are errors, not silent no-ops.** An unknown key, an unknown check, a duplicate id, or a `check` in the wrong category fails with the path of the norm at fault.
-- **Changing what is measured breaks the trend line**, the same as adding or removing a metric. Adding a norm, changing an override's `check` or `params`, or forcing a built-in to manual all count — `min_bound` included, since re-tuning it changes what the score means. Rewording a guideline does not.
+- **Changing what is measured breaks the trend line**, the same as adding or removing a metric. Adding a norm, changing an override's `check` or `params`, or forcing a built-in to manual all count — `min_bound` included, since re-tuning it changes what the score means. So does **upgrading Current itself**, when the release changes what a built-in norm checks: a norm that moves from a human's answer to an automated check measures something different afterwards, and the line resets rather than joining the two. Rewording a guideline does not.
 
 ## CLI
 

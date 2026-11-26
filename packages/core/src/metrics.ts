@@ -208,6 +208,20 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     check: 'code.no-hardcoded-copy',
   },
 
+  {
+    id: 'CO18',
+    category: 'code',
+    subcategory: 'Reusability',
+    guideline: "Component depends only on the system and packages, and on other components through their entry points",
+    // An import that climbs out of the design system couples the component
+    // to the product it serves; one that reaches into another component's
+    // folder depends on how that component is built today rather than what
+    // it promises. Aliased imports are counted and left unjudged: resolving
+    // them needs the project's config, and a guess would invent findings
+    // (#43).
+    check: 'code.dependency-direction',
+  },
+
   // ---- Design (Figma) ----
   {
     id: 'DE1',

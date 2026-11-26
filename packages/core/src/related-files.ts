@@ -53,7 +53,7 @@ function resolveSpecifier(fromFile: string, specifier: string): string | null {
 }
 
 /** `import`, `export … from`, and `export *` sources, in source order. */
-function importSpecifiers(ast: Ast): string[] {
+export function importSpecifiers(ast: Ast): string[] {
   const out: string[] = [];
   for (const stmt of ast.program.body as t.Statement[]) {
     if (stmt.type === 'ImportDeclaration') out.push(stmt.source.value);

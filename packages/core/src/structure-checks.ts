@@ -1,3 +1,4 @@
+import * as path from 'path';
 import type * as t from '@babel/types';
 import {
   CODE_CHECKS,
@@ -7,6 +8,7 @@ import {
   type CodeFacts,
   type ComponentCandidate,
 } from './code-checks';
+import { importSpecifiers } from './related-files';
 import { attributeName, elementName, walkAst } from './walk-ast';
 
 /**
@@ -364,9 +366,144 @@ export function checkNoHardcodedCopy(facts: CodeFacts): CheckResult {
   };
 }
 
+/** Is `child` inside `parent` (or `parent` itself)? Both absolute. */
+function within(child: string, parent: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+/** `src/Button/Button.tsx` without its extension, for comparing import targets. */
+function withoutExt(file: string): string {
+  return file.replace(/\.[cm]?[jt]sx?$/, '');
+}
+
+/**
+ * Is `target` one of a component's PUBLIC entry points: its folder (which a
+ * bundler resolves to `index`), an index file in it, or its entry file?
+ */
+function isPublicEntry(target: string, entry: string): boolean {
+  const dir = path.dirname(entry);
+  const bare = withoutExt(target);
+  return (
+    target === dir ||
+    bare === withoutExt(entry) ||
+    bare === path.join(dir, 'index')
+  );
+}
+
+/**
+ * CO18 — the component's imports point in the right direction.
+ *
+ * A design system's components should depend on the system and on packages,
+ * nothing else. Two kinds of import break that, and both leave a component
+ * that cannot be reused on its own and breaks when something it should not
+ * know about changes:
+ *
+ *   1. Leaving the system. A relative import that climbs out of the
+ *      directory holding `.polder.yml` — `../../../app/hooks/useUser` —
+ *      couples the component to the product it was meant to serve.
+ *   2. Reaching into another component. `../Button/internal/useRipple`
+ *      depends on how Button is built today, not on what Button promises;
+ *      `../Button` (its folder, resolved to its index) or its entry file is
+ *      the public way in.
+ *
+ * Read across every file that belongs to the component — its entry file and
+ * the sub-modules it imports from its own folder — because coupling in a
+ * helper file is still the component's coupling.
+ *
+ * What it cannot see: aliased imports (`@/components/...`, `~/lib`). Those
+ * need the project's tsconfig `paths` or bundler config to resolve, and a
+ * guess would turn an alias into a false finding. They are not judged, and
+ * the evidence says how many were skipped. Package imports are always fine.
+ *
+ * The internals rule stands down where it cannot tell anything apart. When
+ * two components share a folder (`components/Button.tsx` next to
+ * `components/Card.tsx`), "inside Button's folder" is also "inside Card's own
+ * folder", so every import Card makes would look like it reached into
+ * Button. Such a component is judged only on the first rule.
+ */
+export function checkDependencyDirection(facts: CodeFacts): CheckResult {
+  const project = facts.project;
+  if (project === undefined) {
+    return { answer: 'N/A', evidence: 'no project facts: the design system root is unknown' };
+  }
+
+  const files: { abs: string; label: string; ast: CodeFacts['ast'] }[] = [
+    { abs: project.entryPath, label: facts.filePath, ast: facts.ast },
+  ];
+  for (const f of facts.related?.files ?? []) {
+    if (f.kind === 'script' && f.ast !== null) {
+      files.push({ abs: path.resolve(project.root, f.filePath), label: f.filePath, ast: f.ast });
+    }
+  }
+
+  const ownDir = path.dirname(project.entryPath);
+  // Other components whose folder is distinct from this one's: only there
+  // does "inside its folder" mean "its internals".
+  const others = [...project.otherEntries].filter(([, entry]) => {
+    const dir = path.dirname(entry);
+    return !within(ownDir, dir) && !within(dir, ownDir);
+  });
+
+  const outside: string[] = [];
+  const internals: string[] = [];
+  let relative = 0;
+  let aliased = 0;
+
+  for (const file of files) {
+    for (const spec of importSpecifiers(file.ast)) {
+      if (!spec.startsWith('./') && !spec.startsWith('../')) {
+        // Bare package names are fine. Aliases look like packages but are
+        // not, and cannot be resolved without the project's config.
+        if (/^[@~#]\//.test(spec) || spec.startsWith('src/')) aliased++;
+        continue;
+      }
+      relative++;
+      const target = path.resolve(path.dirname(file.abs), spec);
+      if (!within(target, project.root)) {
+        outside.push(`${file.label} imports '${spec}'`);
+        continue;
+      }
+      for (const [name, entry] of others) {
+        if (within(target, path.dirname(entry)) && !isPublicEntry(target, entry)) {
+          internals.push(`${file.label} imports '${spec}' from inside ${name}`);
+          break;
+        }
+      }
+    }
+  }
+
+  const skipped =
+    aliased === 0 ? '' : ` (${aliased} aliased import(s) not judged: aliases need the project config to resolve)`;
+
+  if (outside.length > 0 || internals.length > 0) {
+    const parts: string[] = [];
+    if (outside.length > 0) {
+      parts.push(`${outside.length} import(s) leave the design system: ${outside.slice(0, 3).join('; ')}`);
+    }
+    if (internals.length > 0) {
+      parts.push(
+        `${internals.length} import(s) reach into another component instead of its entry: ` +
+          internals.slice(0, 3).join('; '),
+      );
+    }
+    return { answer: 'No', evidence: `${parts.join('. ')}${skipped}` };
+  }
+
+  return {
+    answer: 'Yes',
+    evidence:
+      relative === 0
+        ? `no relative imports across ${files.length} file(s), so nothing crosses a boundary${skipped}`
+        : `all ${relative} relative import(s) across ${files.length} file(s) stay inside the system, ` +
+          `and none reaches into another component${skipped}`,
+  };
+}
+
 export const STRUCTURE_CHECKS: Record<string, CodeCheck> = {
   'code.extensible': checkExtensible,
   'code.no-hardcoded-copy': checkNoHardcodedCopy,
+  'code.dependency-direction': checkDependencyDirection,
 };
 
 /**

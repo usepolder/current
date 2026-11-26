@@ -56,6 +56,7 @@ export {
   STRUCTURE_CHECKS,
   checkExtensible,
   checkNoHardcodedCopy,
+  checkDependencyDirection,
 } from './structure-checks';
 export { lowestMajor, reactMajorFor, type ProjectFacts } from './project';
 export {

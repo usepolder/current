@@ -378,3 +378,109 @@ describe('code.no-hardcoded-copy (CO17)', () => {
     expect(r.answer).toBe('N/A');
   });
 });
+
+describe('code.dependency-direction (CO18)', () => {
+  const check = CODE_CHECKS['code.dependency-direction'];
+
+  /** Card at /ds/src/Card/Card.tsx; Button and Icon in their own folders. */
+  function card(source: string, overrides: Partial<CodeFacts> = {}): CodeFacts {
+    return facts(source, {
+      componentName: 'Card',
+      filePath: 'src/Card/Card.tsx',
+      project: project({
+        entryPath: '/ds/src/Card/Card.tsx',
+        otherEntries: new Map([
+          ['Button', '/ds/src/Button/Button.tsx'],
+          ['Icon', '/ds/src/Icon/index.ts'],
+        ]),
+      }),
+      ...overrides,
+    });
+  }
+
+  it('answers Yes for packages, own-folder files and other components’ entry points', () => {
+    const r = check(
+      card(`
+        import { useState } from 'react';
+        import clsx from 'clsx';
+        import { styles } from './Card.styles';
+        import { Button } from '../Button';
+        import { Button as B2 } from '../Button/Button';
+        import { Icon } from '../Icon/index';
+        import { tokens } from '../tokens';
+        export function Card() { return null; }
+      `),
+    );
+    expect(r.answer).toBe('Yes');
+    expect(r.evidence).toContain('5 relative import(s)');
+  });
+
+  it('answers No for an import that leaves the design system', () => {
+    const r = check(card(`import { useUser } from '../../../app/hooks/useUser'; export function Card() { return null; }`));
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('leave the design system');
+    expect(r.evidence).toContain('../../../app/hooks/useUser');
+  });
+
+  it('answers No for an import into another component’s internals', () => {
+    const r = check(card(`import { useRipple } from '../Button/internal/useRipple'; export function Card() { return null; }`));
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('reach into another component');
+    expect(r.evidence).toContain('from inside Button');
+  });
+
+  it('treats a sibling file of another component’s entry as internals, too', () => {
+    const r = check(card(`import { styles } from '../Button/Button.styles'; export function Card() { return null; }`));
+    expect(r.answer).toBe('No');
+  });
+
+  // Coupling in a helper is still the component's coupling.
+  it('reads the component’s own sub-files as well as its entry', () => {
+    const helper = parseSource(`import { useUser } from '../../../app/useUser';`, 'src/Card/useCard.ts');
+    const r = check(
+      card(`import { useCard } from './useCard'; export function Card() { return null; }`, {
+        related: {
+          files: [{ filePath: 'src/Card/useCard.ts', source: '', kind: 'script', ast: helper }],
+          notFollowed: 0,
+          unparseable: [],
+        },
+      }),
+    );
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('src/Card/useCard.ts');
+  });
+
+  // Two components in one folder: "inside Button's folder" is also Card's own.
+  it('does not apply the internals rule when components share a folder', () => {
+    const r = check(
+      facts(`import { helpers } from './helpers'; export function Card() { return null; }`, {
+        componentName: 'Card',
+        filePath: 'src/components/Card.tsx',
+        project: project({
+          entryPath: '/ds/src/components/Card.tsx',
+          otherEntries: new Map([['Button', '/ds/src/components/Button.tsx']]),
+        }),
+      }),
+    );
+    expect(r.answer).toBe('Yes');
+  });
+
+  // An alias needs the project's config to resolve; guessing would invent
+  // findings, so they are counted and left alone.
+  it('does not judge aliased imports, and says how many it skipped', () => {
+    const r = check(card(`import { x } from '@/app/internal'; import { y } from '~/lib/y'; export function Card() { return null; }`));
+    expect(r.answer).toBe('Yes');
+    expect(r.evidence).toContain('2 aliased import(s) not judged');
+  });
+
+  it('answers Yes, saying so, when there are no relative imports at all', () => {
+    const r = check(card(`import React from 'react'; export function Card() { return null; }`));
+    expect(r.answer).toBe('Yes');
+    expect(r.evidence).toContain('no relative imports');
+  });
+
+  it('answers N/A without project facts rather than guessing the root', () => {
+    const r = check(card(`export function Card() { return null; }`, { project: undefined }));
+    expect(r.answer).toBe('N/A');
+  });
+});

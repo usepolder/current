@@ -96,7 +96,27 @@ jobs:
       - name: Publish to npm
         run: npm publish -w @usepolder/current-core -w @usepolder/current
 
+      # The notes start from the previous release, named explicitly. Left to
+      # choose for itself, GitHub started v0.5.0's notes at v0.3.1 and listed
+      # everything 0.4.0 had already shipped (#24-#38) as new. The likely
+      # cause is the tag move above: every release tag sits on a bundle commit
+      # that is not on main, so GitHub cannot find the previous release by
+      # walking main's history.
+      #
+      # "Previous" is the tag just below this one in version order, not the
+      # highest other tag, so a later patch to an older line — v0.4.1 cut
+      # after v0.5.0 — starts from v0.4.0 rather than from v0.5.0. The first
+      # release has no predecessor and falls back to GitHub's own choice.
       - name: Create the GitHub release
-        run: gh release create "$GITHUB_REF_NAME" --generate-notes
+        run: |
+          PREV=$(git tag --list 'v*' --sort=v:refname \
+            | awk -v cur="$GITHUB_REF_NAME" '$0==cur{print prev; exit} {prev=$0}')
+          if [ -n "$PREV" ]; then
+            echo "Release notes from $PREV to $GITHUB_REF_NAME"
+            gh release create "$GITHUB_REF_NAME" --generate-notes --notes-start-tag "$PREV"
+          else
+            echo "No earlier release tag: notes start where GitHub chooses"
+            gh release create "$GITHUB_REF_NAME" --generate-notes
+          fi
         env:
           GH_TOKEN: ${{ github.token }}

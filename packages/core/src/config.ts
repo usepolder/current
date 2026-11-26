@@ -222,6 +222,7 @@ const CHECK_PARAM: Record<string, ParamSpec> = {
   'code.contains': { kind: 'strings', key: 'text' },
   'code.forbids': { kind: 'strings', key: 'text' },
   'design.color-tokens': MIN_BOUND_SPEC,
+  'design.exposed-properties': MIN_BOUND_SPEC,
   'design.type-tokens': MIN_BOUND_SPEC,
   'design.spacing-tokens': MIN_BOUND_SPEC,
   'design.radius-tokens': MIN_BOUND_SPEC,

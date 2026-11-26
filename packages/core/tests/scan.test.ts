@@ -176,6 +176,11 @@ describe('scanRepo — end to end against a fixture design system', () => {
     expect(button.metrics.find((m) => m.metricId === 'CO14')).toMatchObject({ answer: 'Yes' });
     expect(button.metrics.find((m) => m.metricId === 'CO14')?.evidence).toContain('Size, State');
     expect(button.metrics.find((m) => m.metricId === 'CO15')).toMatchObject({ answer: 'Yes' });
+    // The fixture's Label text layer is bound to no TEXT property, so a
+    // designer would have to detach the instance to change it.
+    const de12 = button.metrics.find((m) => m.metricId === 'DE12');
+    expect(de12).toMatchObject({ answer: 'No', source: 'auto' });
+    expect(de12?.evidence).toContain('Label (text)');
 
     const wrapper = byName(await scanFixture(), 'Wrapper');
     expect(wrapper.metrics.find((m) => m.metricId === 'CO7')?.answer).toBe('No');
@@ -227,7 +232,7 @@ components:
   Button:
     figma: "1:10"
 metrics:
-  manual: [DE1, DE3, DE4, DE5, DE6, DE7, DE9, DE10]
+  manual: [DE1, DE3, DE4, DE5, DE6, DE7, DE9, DE10, DE12]
 `));
     const answers = parseAnswers('Button:\n  DE1: Yes\n  DE3: Yes\n  DE7: No\n');
 

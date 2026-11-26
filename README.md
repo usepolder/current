@@ -74,7 +74,7 @@ Components Reach saw in use that are not mapped in `.polder.yml` are named, sinc
 
 Current asks one question of a design system: **is it built robustly enough to be reused without drifting?** Drift is what happens when a component cannot be used as-is. Someone detaches the Figma instance, wraps or forks the code, or works from docs that describe an API that no longer exists, and from then on the system and the product disagree. The norms measure the things that prevent that: tokens applied, the component API, and agreement between code, Figma and docs.
 
-27 norms across three categories: 11 code, 8 design, 8 documentation. They roll up per category as:
+28 norms across three categories: 11 code, 9 design, 8 documentation. They roll up per category as:
 
 ```
 score = Yes / (Yes + No)        N/A is excluded from the denominator
@@ -82,7 +82,7 @@ score = Yes / (Yes + No)        N/A is excluded from the denominator
 
 That is deliberately the same arithmetic a spreadsheet audit uses, because the point is to replace the spreadsheet without changing what the number means.
 
-All 27 are checked automatically. (This is the default set; [you can change it](#your-own-norms).) Where a check cannot settle a case it says so and hands that case to a person, and Current reads their answer from a file you own.
+All 28 are checked automatically. (This is the default set; [you can change it](#your-own-norms).) Where a check cannot settle a case it says so and hands that case to a person, and Current reads their answer from a file you own.
 
 **What is not here, and why.** The rubric started as a real design system's audit sheet of 32 norms. Twelve have gone, and the gaps in the ids are the record; ids are never reused, so an answers file always points at the norm it was written for.
 
@@ -97,7 +97,7 @@ The axes are not equally trustworthy:
 | Axis | Automated | Checked against a human verdict? |
 | --- | --- | --- |
 | Code | 11 of 11 | **No.** Never, on any component. Three of the eleven do not read source at all: CO6 and CO10 probe a browser, CO12 reads your Code Connect mappings. |
-| Design | 8 of 8 | Yes, per metric, against a hand-audited production system. |
+| Design | 9 of 9 | Yes for DE1–DE10, per metric, against a hand-audited production system. **Not DE12**, which is newer and rests on a Figma field this project has not yet seen on a live file (below). |
 | Documentation | 8 of 8 | Not separately. Its checks match a heading, and the evidence string shows which heading matched. |
 
 The code axis is the only one whose automation has never been compared
@@ -120,11 +120,15 @@ tool has yet seen that field come back from a real file, because the example
 system it dogfoods against has no Figma file behind it. The field is in the
 contract and the check is tested against the shape the contract describes;
 until a real file confirms it, that is a spec-backed check and not a
-file-backed one, which is a weaker thing. The `#1:2` suffix on property keys
+file-backed one, which is a weaker thing. **DE12** is in the same position
+and more so: it reads `componentPropertyReferences` (with its `characters`
+and `mainComponent` keys) to tell whether a label or nested instance is bound
+to a property. The spec declares it; no run has observed it. Until one does,
+treat a DE12 `No` as worth checking by hand before acting on it. The `#1:2` suffix on property keys
 is the mirror image: observed on every real file, documented nowhere, so every
 reader here strips it when present and none requires it.
 
-**Checked automatically** — hardcoded colours and px values, whether a component can be extended without forking it (ref forwarded, unknown props passed on, `className` merged), whether it hardcodes copy a consumer cannot change, whether its imports stay inside the system and go through other components' entry points, component naming, code/Figma property parity in names, variant values and defaults, whether the code declares which Figma node it implements, colour + type + spacing + radius token binding, layer naming, Auto Layout, which interaction states the Figma component declares, whether those states are wired up, whether each documented section exists, whether a local props table lists the props the code actually accepts, and — for components with a `preview:` URL — breakpoint overflow and whether the layout survives 40% more text, probed in a real browser.
+**Checked automatically** — hardcoded colours and px values, whether a component can be extended without forking it (ref forwarded, unknown props passed on, `className` merged), whether it hardcodes copy a consumer cannot change, whether its imports stay inside the system and go through other components' entry points, component naming, code/Figma property parity in names, variant values and defaults, whether the code declares which Figma node it implements, colour + type + spacing + radius token binding, layer naming, Auto Layout, whether labels and nested instances are exposed as component properties rather than needing a detach, which interaction states the Figma component declares, whether those states are wired up, whether each documented section exists, whether a local props table lists the props the code actually accepts, and — for components with a `preview:` URL — breakpoint overflow and whether the layout survives 40% more text, probed in a real browser.
 
 ### Answering what automation hands back
 
@@ -375,7 +379,7 @@ current:
 
 ## Your own norms
 
-The 27 metrics are a starting point, not a standard you have to adopt. Every organisation prioritises different things, so all of them can be changed, and you can add your own.
+The 28 metrics are a starting point, not a standard you have to adopt. Every organisation prioritises different things, so all of them can be changed, and you can add your own.
 
 ```yaml
 current:

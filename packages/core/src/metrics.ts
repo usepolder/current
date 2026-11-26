@@ -316,6 +316,19 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     check: 'design.auto-layout',
   },
 
+  {
+    id: 'DE12',
+    category: 'design',
+    subcategory: 'Reusability',
+    guideline: 'Text layers and nested instances are exposed as component properties',
+    // Designers detach an instance when they need to change something the
+    // component does not let them change, and a detached instance never
+    // updates again. Binding labels to TEXT properties and nested instances
+    // to INSTANCE_SWAP properties removes the reason. DE11 is retired, so
+    // this is DE12 (#45).
+    check: 'design.exposed-properties',
+  },
+
   // ---- Documentation ----
   // The doc checks look for a matching heading in the mapped doc file. That
   // proves a section exists, not that it is any good — `--verbose` prints the

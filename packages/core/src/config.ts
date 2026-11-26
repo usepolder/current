@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as yaml from 'js-yaml';
 import { isDocsUrl } from './docs-source';
 import { ConfigValidationError, ParseError, PathTraversalError } from './errors';
-import { CODE_CHECKS } from './code-checks';
+import { ALL_CODE_CHECKS as CODE_CHECKS } from './structure-checks';
 import {
   DEFAULT_BREAKPOINT_WIDTHS,
   DRIVER_KEY,

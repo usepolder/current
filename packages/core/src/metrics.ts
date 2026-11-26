@@ -1,5 +1,5 @@
 /**
- * The 21 default metrics. They started as a production design system's
+ * The default metrics. They started as a production design system's
  * "Component Health" audit sheet (Template tab) and have been narrowed to one
  * question: is the design system built robustly enough to be reused without
  * drifting? Teams can disable any of them or flip an automated one to manual
@@ -181,6 +181,19 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     // Figma side and was dropped: one claim, one norm, and this is the side
     // where the evidence lives.
     check: 'code.figma-connect',
+  },
+
+  {
+    id: 'CO16',
+    category: 'code',
+    subcategory: 'Reusability',
+    guideline: 'Component can be extended without forking: ref forwarded, unknown props passed on, className merged',
+    // Each of the three is something a product team otherwise rebuilds, by
+    // wrapping or copying the component — which is where drift starts. Ref
+    // forwarding is judged against the React version the system declares,
+    // because a props spread carries a ref on 19 and silently drops it on 18
+    // (#41).
+    check: 'code.extensible',
   },
 
   // ---- Design (Figma) ----

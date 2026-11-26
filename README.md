@@ -74,7 +74,7 @@ Components Reach saw in use that are not mapped in `.polder.yml` are named, sinc
 
 Current asks one question of a design system: **is it built robustly enough to be reused without drifting?** Drift is what happens when a component cannot be used as-is. Someone detaches the Figma instance, wraps or forks the code, or works from docs that describe an API that no longer exists, and from then on the system and the product disagree. The norms measure the things that prevent that: tokens applied, the component API, and agreement between code, Figma and docs.
 
-21 norms across three categories: 6 code, 8 design, 7 documentation. They roll up per category as:
+22 norms across three categories: 7 code, 8 design, 7 documentation. They roll up per category as:
 
 ```
 score = Yes / (Yes + No)        N/A is excluded from the denominator
@@ -82,7 +82,7 @@ score = Yes / (Yes + No)        N/A is excluded from the denominator
 
 That is deliberately the same arithmetic a spreadsheet audit uses, because the point is to replace the spreadsheet without changing what the number means.
 
-All 21 are checked automatically. (This is the default set; [you can change it](#your-own-norms).) Where a check cannot settle a case it says so and hands that case to a person, and Current reads their answer from a file you own.
+All 22 are checked automatically. (This is the default set; [you can change it](#your-own-norms).) Where a check cannot settle a case it says so and hands that case to a person, and Current reads their answer from a file you own.
 
 **What is not here, and why.** The rubric started as a real design system's audit sheet of 32 norms. Twelve have gone, and the gaps in the ids are the record; ids are never reused, so an answers file always points at the norm it was written for.
 
@@ -96,7 +96,7 @@ The axes are not equally trustworthy:
 
 | Axis | Automated | Checked against a human verdict? |
 | --- | --- | --- |
-| Code | 6 of 6 | **No.** Never, on any component. Three of the six do not read source at all: CO6 and CO10 probe a browser, CO12 reads your Code Connect mappings. |
+| Code | 7 of 7 | **No.** Never, on any component. Three of the seven do not read source at all: CO6 and CO10 probe a browser, CO12 reads your Code Connect mappings. |
 | Design | 8 of 8 | Yes, per metric, against a hand-audited production system. |
 | Documentation | 7 of 7 | Not separately. Its checks match a heading, and the evidence string shows which heading matched. |
 
@@ -124,7 +124,7 @@ file-backed one, which is a weaker thing. The `#1:2` suffix on property keys
 is the mirror image: observed on every real file, documented nowhere, so every
 reader here strips it when present and none requires it.
 
-**Checked automatically** — hardcoded colours and px values, component naming, code/Figma property parity, whether the code declares which Figma node it implements, colour + type + spacing + radius token binding, layer naming, Auto Layout, which interaction states the Figma component declares, whether those states are wired up, whether each documented section exists, and — for components with a `preview:` URL — breakpoint overflow and whether the layout survives 40% more text, probed in a real browser.
+**Checked automatically** — hardcoded colours and px values, whether a component can be extended without forking it (ref forwarded, unknown props passed on, `className` merged), component naming, code/Figma property parity, whether the code declares which Figma node it implements, colour + type + spacing + radius token binding, layer naming, Auto Layout, which interaction states the Figma component declares, whether those states are wired up, whether each documented section exists, and — for components with a `preview:` URL — breakpoint overflow and whether the layout survives 40% more text, probed in a real browser.
 
 ### Answering what automation hands back
 
@@ -375,7 +375,7 @@ current:
 
 ## Your own norms
 
-The 21 metrics are a starting point, not a standard you have to adopt. Every organisation prioritises different things, so all of them can be changed, and you can add your own.
+The 22 metrics are a starting point, not a standard you have to adopt. Every organisation prioritises different things, so all of them can be changed, and you can add your own.
 
 ```yaml
 current:

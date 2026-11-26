@@ -1,7 +1,9 @@
+import { reactMajorFor, type ProjectFacts } from './project';
 import * as fs from 'fs';
 import * as path from 'path';
 import { lookupAnswer, type AnswerBook } from './answers';
-import { CODE_CHECKS, type CheckResult, type CodeConnectFacts, type CodeFacts } from './code-checks';
+import { type CheckResult, type CodeConnectFacts, type CodeFacts } from './code-checks';
+import { ALL_CODE_CHECKS as CODE_CHECKS } from './structure-checks';
 import {
   CODE_CONNECT_CONFIG,
   extractCodeConnect,
@@ -118,6 +120,8 @@ interface LoadedComponent {
   figmaNode: FigmaNode | null;
   /** The Code Connect side, or null when no norm asked for it. */
   codeConnect: CodeConnectFacts | null;
+  /** Repo-level facts the code checks need, or null with no code to judge. */
+  project: ProjectFacts | null;
 }
 
 /**
@@ -205,11 +209,13 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
   }
 
   const loaded: LoadedComponent[] = [];
+  const reactCache = new Map<string, number | null>();
   for (const mapping of config.components) {
     const paths = resolvedPaths.get(mapping.name)!;
     let source: string | null = null;
     let ast: Ast | null = null;
     let related: RelatedFiles | null = null;
+    let project: ProjectFacts | null = null;
     if (paths.code !== null && fs.existsSync(paths.code)) {
       source = fs.readFileSync(paths.code, 'utf8');
       ast = parseSource(source, path.relative(repoRoot, paths.code));
@@ -220,6 +226,16 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
         if (name !== mapping.name && p.code !== null) others.add(path.resolve(p.code));
       }
       related = collectRelatedFiles(paths.code, ast, repoRoot, others);
+      const otherEntries = new Map<string, string>();
+      for (const [name, p] of resolvedPaths) {
+        if (name !== mapping.name && p.code !== null) otherEntries.set(name, path.resolve(p.code));
+      }
+      project = {
+        root: path.resolve(repoRoot),
+        entryPath: path.resolve(paths.code),
+        otherEntries,
+        reactMajor: reactMajorFor(paths.code, repoRoot, reactCache),
+      };
       logger.trace(
         `${mapping.name}: ${related.files.length} related file(s)` +
           (related.files.length > 0 ? ` — ${related.files.map((f) => f.filePath).join(', ')}` : ''),
@@ -260,6 +276,7 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
       probeAbsenceDetail: live.detail,
       figmaNode: mapping.figma === null ? null : figmaNodes.get(mapping.figma) ?? null,
       codeConnect: connect,
+      project,
     });
   }
 
@@ -549,6 +566,7 @@ function scoreComponent(
           figmaPropertyNames: c.figmaNode === null ? null : figmaPropertyNames(c.figmaNode),
           ...(c.related === null ? {} : { related: c.related }),
           ...(c.codeConnect === null ? {} : { codeConnect: c.codeConnect }),
+          ...(c.project === null ? {} : { project: c.project }),
         };
 
   const designFacts: DesignFacts | null =

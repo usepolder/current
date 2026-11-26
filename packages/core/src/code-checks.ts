@@ -1,3 +1,4 @@
+import type { ProjectFacts } from './project';
 import type * as t from '@babel/types';
 import { CODE_CONNECT_CONFIG, type CodeConnectMapping } from './code-connect';
 import type { Ast } from './parse';
@@ -46,6 +47,13 @@ export interface CodeFacts {
    * Absent means they were never looked for — no norm asked.
    */
   codeConnect?: CodeConnectFacts;
+  /**
+   * Facts about the design system as a whole: its root, the other
+   * components' entry files, and the React it is built for. Absent in a
+   * check called without a scan, which the structural checks treat as "could
+   * not tell" rather than guessing.
+   */
+  project?: ProjectFacts;
 }
 
 /** The Code Connect side of one component, assembled by the scan. */
@@ -321,12 +329,14 @@ function addNamedType(
   }
 }
 
-interface ComponentCandidate {
+export interface ComponentCandidate {
   name: string;
   exported: boolean;
   fn: t.Function;
   /** Type annotations that may carry the props type, outside the parameter. */
   typeHints: (t.TSTypeAnnotation | t.TSTypeParameterInstantiation | null | undefined)[];
+  /** Wrappers unwrapped to reach `fn`, outermost first: `['memo', 'forwardRef']`. */
+  wrappers: string[];
 }
 
 const WRAPPERS = new Set(['forwardRef', 'memo', 'observer']);
@@ -335,6 +345,7 @@ const WRAPPERS = new Set(['forwardRef', 'memo', 'observer']);
 function unwrapComponent(
   expr: t.Node | null | undefined,
   hints: ComponentCandidate['typeHints'],
+  wrappers: string[] = [],
 ): t.Function | null {
   if (expr === null || expr === undefined) return null;
   if (
@@ -354,7 +365,8 @@ function unwrapComponent(
           : null;
     if (calleeName !== null && WRAPPERS.has(calleeName)) {
       hints.push(expr.typeParameters);
-      return unwrapComponent(expr.arguments[0] as t.Node | undefined, hints);
+      wrappers.push(calleeName);
+      return unwrapComponent(expr.arguments[0] as t.Node | undefined, hints, wrappers);
     }
   }
   return null;
@@ -369,11 +381,12 @@ function findComponents(ast: Ast): ComponentCandidate[] {
     expr: t.Node | null | undefined,
     hints: ComponentCandidate['typeHints'],
   ): void => {
-    const fn = unwrapComponent(expr, hints);
+    const wrappers: string[] = [];
+    const fn = unwrapComponent(expr, hints, wrappers);
     if (fn === null || name === null) return;
     // Components are capitalised; a lowercase helper is a hook or utility.
     if (name[0] === undefined || name[0] !== name[0].toUpperCase() || name[0] === name[0].toLowerCase()) return;
-    out.push({ name, exported, fn, typeHints: hints });
+    out.push({ name, exported, fn, typeHints: hints, wrappers });
   };
 
   for (const stmt of ast.program.body) {
@@ -418,14 +431,23 @@ function findComponents(ast: Ast): ComponentCandidate[] {
  * Without a `componentName`, or when no component can be found, only the
  * `*Props` type declarations are read — never destructuring.
  */
+/**
+ * The component a check should judge: the one named like the mapped
+ * component, or failing that every exported one. The same choice CO9 makes,
+ * so every check reads the same function.
+ */
+export function chooseComponents(ast: Ast, componentName?: string): ComponentCandidate[] {
+  const all = findComponents(ast);
+  const named = componentName === undefined ? [] : all.filter((c) => c.name === componentName);
+  return named.length > 0 ? named : all.filter((c) => c.exported);
+}
+
 export function collectCodePropNames(ast: Ast, componentName?: string): string[] {
   const names = new Set<string>();
   const decls = collectTypeDeclarations(ast);
   const seen = new Set<string>();
 
-  const all = findComponents(ast);
-  const named = componentName === undefined ? [] : all.filter((c) => c.name === componentName);
-  const chosen = named.length > 0 ? named : all.filter((c) => c.exported);
+  const chosen = chooseComponents(ast, componentName);
 
   if (chosen.length === 0) {
     for (const name of decls.keys()) {

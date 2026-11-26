@@ -171,6 +171,11 @@ describe('scanRepo — end to end against a fixture design system', () => {
     const button = byName(await scanFixture(), 'Button');
     expect(button.metrics.find((m) => m.metricId === 'CO7')?.answer).toBe('Yes');
     expect(button.metrics.find((m) => m.metricId === 'CO9')?.answer).toBe('Yes');
+    // The fixture's Figma set and Button's props agree on values (Size and
+    // State) and on the one default either side declares (Disabled: false).
+    expect(button.metrics.find((m) => m.metricId === 'CO14')).toMatchObject({ answer: 'Yes' });
+    expect(button.metrics.find((m) => m.metricId === 'CO14')?.evidence).toContain('Size, State');
+    expect(button.metrics.find((m) => m.metricId === 'CO15')).toMatchObject({ answer: 'Yes' });
 
     const wrapper = byName(await scanFixture(), 'Wrapper');
     expect(wrapper.metrics.find((m) => m.metricId === 'CO7')?.answer).toBe('No');

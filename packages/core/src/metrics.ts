@@ -222,6 +222,28 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     check: 'code.dependency-direction',
   },
 
+  {
+    id: 'CO14',
+    category: 'code',
+    subcategory: 'Naming',
+    guideline: 'Variant values match between code and Figma',
+    // CO9 compares property names only, so a `size` on both sides passes
+    // while Figma offers `xl` and code cannot build it. This compares the
+    // values: Figma's variant options against the code prop's literal union
+    // (#40).
+    check: 'code.figma-variant-values',
+  },
+  {
+    id: 'CO15',
+    category: 'code',
+    subcategory: 'Naming',
+    guideline: 'Default values match between code and Figma',
+    // Same values, different starting state is still drift: designs show
+    // one default and code ships another. Variant and boolean properties
+    // only, since a TEXT default is placeholder content, not a state (#40).
+    check: 'code.figma-default-values',
+  },
+
   // ---- Design (Figma) ----
   {
     id: 'DE1',

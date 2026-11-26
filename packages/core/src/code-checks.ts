@@ -38,6 +38,13 @@ export interface CodeFacts {
   /** Figma variant/property names, when the Figma side resolved. */
   figmaPropertyNames: string[] | null;
   /**
+   * The Figma node's full `componentPropertyDefinitions`, when the Figma side
+   * resolved: types, variant options and defaults, for the parity checks
+   * that compare values rather than names. Absent in a check called without
+   * a scan.
+   */
+  figmaPropertyDefinitions?: Record<string, unknown> | null;
+  /**
    * The component's other files (styles, sub-modules it imports from its own
    * directory). Absent means only the entry file was available.
    */
@@ -242,7 +249,7 @@ export function normalisePropName(raw: string): string {
 type TypeMembers = t.TSTypeElement[];
 
 /** Top-level `interface XProps` / `type XProps = {...}` declarations, by name. */
-function collectTypeDeclarations(ast: Ast): Map<string, t.TSInterfaceDeclaration | t.TSTypeAliasDeclaration> {
+export function collectTypeDeclarations(ast: Ast): Map<string, t.TSInterfaceDeclaration | t.TSTypeAliasDeclaration> {
   const out = new Map<string, t.TSInterfaceDeclaration | t.TSTypeAliasDeclaration>();
   for (const stmt of ast.program.body) {
     const decl =

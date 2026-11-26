@@ -8,6 +8,7 @@ import {
   type CodeFacts,
   type ComponentCandidate,
 } from './code-checks';
+import { PARITY_CHECKS } from './parity-checks';
 import { importSpecifiers } from './related-files';
 import { attributeName, elementName, walkAst } from './walk-ast';
 
@@ -514,4 +515,5 @@ export const STRUCTURE_CHECKS: Record<string, CodeCheck> = {
 export const ALL_CODE_CHECKS: Record<string, CodeCheck> = {
   ...CODE_CHECKS,
   ...STRUCTURE_CHECKS,
+  ...PARITY_CHECKS,
 };

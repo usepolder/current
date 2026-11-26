@@ -60,6 +60,13 @@ export {
 } from './structure-checks';
 export { lowestMajor, reactMajorFor, type ProjectFacts } from './project';
 export {
+  PARITY_CHECKS,
+  checkVariantValues,
+  checkDefaultValues,
+  collectCodePropShapes,
+  type CodePropShape,
+} from './parity-checks';
+export {
   CODE_CONNECT_CONFIG,
   extractCodeConnect,
   indexCodeConnect,

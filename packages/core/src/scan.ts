@@ -564,6 +564,8 @@ function scoreComponent(
           source: c.source ?? '',
           ast: c.ast,
           figmaPropertyNames: c.figmaNode === null ? null : figmaPropertyNames(c.figmaNode),
+          figmaPropertyDefinitions:
+            c.figmaNode === null ? null : (c.figmaNode.componentPropertyDefinitions ?? {}),
           ...(c.related === null ? {} : { related: c.related }),
           ...(c.codeConnect === null ? {} : { codeConnect: c.codeConnect }),
           ...(c.project === null ? {} : { project: c.project }),

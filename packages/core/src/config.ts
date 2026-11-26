@@ -218,6 +218,7 @@ const CHECK_PARAM: Record<string, ParamSpec> = {
   ...Object.fromEntries(Object.keys(LIVE_CHECKS).map((id) => [id, null])),
   ...Object.fromEntries(Object.keys(DESIGN_CHECKS).map((id) => [id, null])),
   'docs.section': { kind: 'strings', key: 'headings' },
+  'docs.props': null,
   'code.contains': { kind: 'strings', key: 'text' },
   'code.forbids': { kind: 'strings', key: 'text' },
   'design.color-tokens': MIN_BOUND_SPEC,

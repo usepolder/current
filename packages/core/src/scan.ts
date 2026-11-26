@@ -2,7 +2,7 @@ import { reactMajorFor, type ProjectFacts } from './project';
 import * as fs from 'fs';
 import * as path from 'path';
 import { lookupAnswer, type AnswerBook } from './answers';
-import { type CheckResult, type CodeConnectFacts, type CodeFacts } from './code-checks';
+import { collectCodePropNames, type CheckResult, type CodeConnectFacts, type CodeFacts } from './code-checks';
 import { ALL_CODE_CHECKS as CODE_CHECKS } from './structure-checks';
 import {
   CODE_CONNECT_CONFIG,
@@ -13,7 +13,13 @@ import {
   type CodeConnectIndex,
 } from './code-connect';
 import { resolveComponentPaths, type ComponentMapping, type CurrentConfig } from './config';
-import { checkDocSection, extractHeadings, extractHtmlHeadings, type DocsFacts } from './docs-checks';
+import {
+  checkDocSection,
+  checkDocumentedProps,
+  extractHeadings,
+  extractHtmlHeadings,
+  type DocsFacts,
+} from './docs-checks';
 import {
   isDocsUrl,
   renderDocsPages,
@@ -110,6 +116,8 @@ interface LoadedComponent {
   related: RelatedFiles | null;
   /** Headings found in the docs, or null when there were none to read. */
   docsHeadings: string[] | null;
+  /** The local docs file's text, for checks that read more than headings. */
+  docsSource: string | null;
   docsAbsence: DocsFacts['absence'];
   docsAbsenceDetail?: string;
   previewUrl: string | null;
@@ -268,6 +276,7 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
       ast,
       related,
       docsHeadings: docs.headings,
+      docsSource: docs.source ?? null,
       docsAbsence: docs.absence,
       docsAbsenceDetail: docs.detail,
       previewUrl: mapping.preview,
@@ -423,7 +432,7 @@ function loadDocs(
   opts: ScanOptions,
   pages: ReadonlyMap<string, RenderedPage>,
   logger: Logger,
-): { headings: string[] | null; absence: DocsFacts['absence']; detail?: string } {
+): { headings: string[] | null; source?: string; absence: DocsFacts['absence']; detail?: string } {
   if (docs === null) return { headings: null, absence: 'unmapped' };
 
   if (!isDocsUrl(docs)) {
@@ -431,9 +440,10 @@ function loadDocs(
       logger.trace(`${component}: docs file missing at ${docs}`);
       return { headings: null, absence: 'missing' };
     }
-    const headings = extractHeadings(fs.readFileSync(docs, 'utf8'));
+    const source = fs.readFileSync(docs, 'utf8');
+    const headings = extractHeadings(source);
     logger.trace(`${component}: ${headings.length} heading(s) from the docs file`);
-    return { headings, absence: null };
+    return { headings, source, absence: null };
   }
 
   if (opts.renderDocs === undefined || opts.renderDocs === null) {
@@ -732,6 +742,19 @@ function runCheck(
     const fn = DESIGN_CHECKS[checkId];
     if (!fn) return { answer: 'N/A', evidence: `unknown check "${checkId}"` };
     return fn(args.designFacts, params);
+  }
+
+  if (checkId === 'docs.props') {
+    return checkDocumentedProps({
+      componentName: args.component.name,
+      source: args.component.docsSource,
+      hosted: args.component.docsPath !== null && isDocsUrl(args.component.docsPath),
+      absence: args.component.docsAbsence,
+      codeProps:
+        args.component.ast === null
+          ? null
+          : collectCodePropNames(args.component.ast, args.component.name),
+    });
   }
 
   if (checkId === 'docs.section') {

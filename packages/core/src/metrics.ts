@@ -383,6 +383,17 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     check: 'docs.section',
     params: { headings: ['states', 'interaction states', 'state'] },
   },
+  {
+    id: 'DO10',
+    category: 'documentation',
+    subcategory: 'Quality',
+    guideline: 'Documented props match the code',
+    // A props table listing a removed prop, or missing an added one, has
+    // consumers building against an API that does not exist: drift in the
+    // place people learn the system from. A table generated from the types
+    // (ArgTypes, Controls) cannot drift and answers Yes (#44).
+    check: 'docs.props',
+  },
 ];
 
 export const DEFAULT_METRICS_BY_ID: ReadonlyMap<string, MetricDef> = new Map(

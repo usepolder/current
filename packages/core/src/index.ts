@@ -96,6 +96,9 @@ export {
 } from './figma-checks';
 export {
   checkDocSection,
+  checkDocumentedProps,
+  documentedProps,
+  type DocsPropsFacts,
   extractHeadings,
   extractHtmlHeadings,
   headingMatches,

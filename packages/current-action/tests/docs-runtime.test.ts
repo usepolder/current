@@ -118,11 +118,18 @@ describe('hosted docs through the Action renderer', () => {
       renderDocs: createActionBrowsers({ trace: () => {} } as never, d).renderer,
     });
     const doc = report.components[0].metrics.filter((m) => m.category === 'documentation' && m.source === 'auto');
-    expect(doc.length).toBeGreaterThan(0);
-    for (const m of doc) {
+    // Every norm that reads the hosted page reports why it could not.
+    const reading = doc.filter((m) => m.metricId !== 'DO10');
+    expect(reading.length).toBeGreaterThan(0);
+    for (const m of reading) {
       expect(m.answer).toBe('N/A');
       expect(m.evidence).toContain('offline');
     }
+    // DO10 never reads a hosted page, rendered or not, so the render failure
+    // is not its reason and it must not claim it.
+    const props = doc.find((m) => m.metricId === 'DO10');
+    expect(props).toMatchObject({ answer: 'N/A' });
+    expect(props!.evidence).toContain('hosted page');
   });
 });
 

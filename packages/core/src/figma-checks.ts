@@ -758,6 +758,227 @@ export function figmaPropertyNames(node: FigmaNode): string[] {
   return [];
 }
 
+/** The variants of a component: a set's children, or the component itself. */
+function variantsOf(root: FigmaNode): FigmaNode[] {
+  return root.type === 'COMPONENT_SET' ? (root.children ?? []) : [root];
+}
+
+/** A property reference on a layer, read defensively: the API's shapes are loose. */
+function propertyReference(node: FigmaNode, field: string): string | null {
+  const refs = node.componentPropertyReferences;
+  if (typeof refs !== 'object' || refs === null) return null;
+  const value = (refs as Record<string, unknown>)[field];
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
+/**
+ * The layers a designer would want to change, inside one variant: its TEXT
+ * layers and the instances nested in it.
+ *
+ * The walk stops at a nested instance. Text inside an Icon instance belongs
+ * to the Icon component, and exposing it is the Icon's own DE12 — counting it
+ * here would charge this component for a layer it does not own. Only TEXT
+ * and INSTANCE layers are counted, so Figma's chrome never is; its children
+ * are still walked, as in the token norms.
+ */
+function exposableLayers(variant: FigmaNode): FigmaNode[] {
+  const out: FigmaNode[] = [];
+  const visit = (n: FigmaNode): void => {
+    for (const child of n.children ?? []) {
+      if (child.type === 'TEXT') {
+        out.push(child);
+      } else if (child.type === 'INSTANCE') {
+        out.push(child);
+        continue;
+      }
+      visit(child);
+    }
+  };
+  visit(variant);
+  return out;
+}
+
+/**
+ * DE12 — the layers a designer would change are exposed as component
+ * properties.
+ *
+ * Detaching an instance is the main way a design system drifts in Figma,
+ * and designers detach for one reason: they need to change something the
+ * component does not let them change. The label is the usual one, the icon
+ * the next. Once detached, the instance never receives another update.
+ *
+ * So every TEXT layer should be bound to a `TEXT` property (its
+ * `componentPropertyReferences.characters`), and every nested instance to an
+ * `INSTANCE_SWAP` property (`componentPropertyReferences.mainComponent`).
+ *
+ * Some nested instances are a fixed part of the component's identity — the
+ * spinner inside a loading button — and there is no field that says "fixed
+ * on purpose", so this check cannot tell. A team with such parts re-tunes
+ * `min_bound` the way the token norms do; the default, 100, asks for every
+ * one.
+ */
+export function checkExposedProperties(facts: DesignFacts, params?: Params): CheckResult {
+  const minBound = minBoundFrom(params);
+  const variants = variantsOf(facts.node);
+  const layers = variants.flatMap(exposableLayers);
+  if (layers.length === 0) {
+    return { answer: 'N/A', evidence: 'no text layers or nested instances to expose' };
+  }
+
+  const isExposed = (n: FigmaNode): boolean =>
+    n.type === 'TEXT'
+      ? propertyReference(n, 'characters') !== null
+      : propertyReference(n, 'mainComponent') !== null;
+  const hidden = layers.filter((n) => !isExposed(n));
+  const pct = ((layers.length - hidden.length) / layers.length) * 100;
+  const tail =
+    minBound === DEFAULT_MIN_BOUND
+      ? ''
+      : ` (${pct.toFixed(0)}% ${pct >= minBound ? '≥' : '<'} ${minBound}% threshold)`;
+
+  if (hidden.length === 0) {
+    return {
+      answer: 'Yes',
+      evidence: `all ${layers.length} text layer(s) and nested instance(s) are exposed as properties`,
+    };
+  }
+  const names = [
+    ...new Set(hidden.map((n) => `${n.name} (${n.type === 'TEXT' ? 'text' : 'instance'})`)),
+  ];
+  return {
+    answer: pct >= minBound ? 'Yes' : 'No',
+    evidence:
+      `${hidden.length} of ${layers.length} layer(s) are not exposed as properties, so changing ` +
+      `them means detaching: ${names.slice(0, 5).join(', ')}${tail}`,
+  };
+}
+
+/** TEXT layers in one variant, stopping at nested instances (they are another component's). */
+function textLayers(variant: FigmaNode): FigmaNode[] {
+  const out: FigmaNode[] = [];
+  const visit = (n: FigmaNode): void => {
+    for (const child of n.children ?? []) {
+      if (child.type === 'INSTANCE') continue;
+      if (child.type === 'TEXT') out.push(child);
+      visit(child);
+    }
+  };
+  visit(variant);
+  return out;
+}
+
+/** A text layer's TypeStyle, where Figma keeps `textAutoResize` and `textTruncation`. */
+function typeStyle(node: FigmaNode): Record<string, unknown> {
+  return typeof node.style === 'object' && node.style !== null ? node.style : {};
+}
+
+/** The author declared what happens to long text: an ellipsis, optionally after N lines. */
+function declaresTruncation(node: FigmaNode): boolean {
+  const st = typeStyle(node);
+  return st.textTruncation === 'ENDING' || st.textAutoResize === 'TRUNCATE';
+}
+
+/**
+ * How a text layer responds to longer content: it grows sideways, it wraps
+ * and grows downward, it is pinned in both directions, or the API gave no way
+ * to tell.
+ *
+ * `textAutoResize` absent means NONE — Figma's spec says the default is that
+ * text does not auto-resize — but only once the layer carries auto-layout
+ * sizing at all. A layer with no sizing fields of any kind is not judged:
+ * reading an absent field as a verdict is how a check ends up wrong on every
+ * component it looks at.
+ */
+function textGrowth(node: FigmaNode): 'sideways' | 'down' | 'fixed' | 'unknown' {
+  const st = typeStyle(node);
+  const auto = st.textAutoResize;
+  const h = node.layoutSizingHorizontal;
+  const v = node.layoutSizingVertical;
+  if (auto === undefined && h === undefined && v === undefined) return 'unknown';
+  if (auto === 'WIDTH_AND_HEIGHT' || h === 'HUG') return 'sideways';
+  if (auto === 'HEIGHT' || v === 'HUG') return 'down';
+  return 'fixed';
+}
+
+/** Does this frame's width follow its content? Newer field first, then the older pair. */
+function hugsWidth(node: FigmaNode): boolean {
+  if (node.layoutSizingHorizontal !== undefined) return node.layoutSizingHorizontal === 'HUG';
+  if (node.layoutMode === 'HORIZONTAL') return node.primaryAxisSizingMode === 'AUTO';
+  if (node.layoutMode === 'VERTICAL') return node.counterAxisSizingMode === 'AUTO';
+  return false;
+}
+
+/**
+ * DE13 — the component's layout survives longer content.
+ *
+ * The Figma side of CO10. A component whose label is pinned to a fixed box
+ * breaks the first time a designer types a longer one, and they fix it by
+ * detaching and resizing — drift again.
+ *
+ * Two failures:
+ *
+ *   1. A text layer that cannot grow in either direction and declares no
+ *      truncation. Text that wraps — fixed width, growing downward — is fine:
+ *      that is how a paragraph in a card is meant to behave, and calling it a
+ *      failure would flag every multi-line layout.
+ *   2. A variant whose width hugs its content, containing text that grows
+ *      sideways, with no `maxWidth`. Nothing stops it growing without limit.
+ *
+ * A declared limit satisfies the norm rather than failing it, exactly as in
+ * CO10: `textTruncation: ENDING` is the designer saying what happens to long
+ * text, and a `maxWidth` is the bound being defined.
+ */
+export function checkLayoutSurvivesContent(facts: DesignFacts): CheckResult {
+  const variants = variantsOf(facts.node);
+  const pinned: string[] = [];
+  const unbounded: string[] = [];
+  let judged = 0;
+
+  for (const variant of variants) {
+    const texts = textLayers(variant);
+    let growsSideways = false;
+    for (const text of texts) {
+      const growth = textGrowth(text);
+      if (growth === 'unknown') continue;
+      judged++;
+      if (growth === 'sideways') growsSideways = true;
+      if (growth === 'fixed' && !declaresTruncation(text)) pinned.push(text.name);
+    }
+    if (growsSideways && hugsWidth(variant)) {
+      judged++;
+      const max = variant.maxWidth;
+      if (!(typeof max === 'number' && max > 0)) unbounded.push(variant.name);
+    }
+  }
+
+  if (judged === 0) {
+    return {
+      answer: 'N/A',
+      evidence: 'no text layer carries sizing the API reports, so there is nothing to judge',
+    };
+  }
+  const problems: string[] = [];
+  if (pinned.length > 0) {
+    const names = [...new Set(pinned)];
+    problems.push(
+      `${pinned.length} text layer(s) cannot grow and declare no truncation: ${names.slice(0, 5).join(', ')}`,
+    );
+  }
+  if (unbounded.length > 0) {
+    problems.push(
+      `${unbounded.length} variant(s) grow with their text and have no maxWidth: ` +
+        unbounded.slice(0, 3).join(', '),
+    );
+  }
+  if (problems.length > 0) {
+    return { answer: 'No', evidence: problems.join('; ') };
+  }
+  return {
+    answer: 'Yes',
+    evidence: `every text layer grows or declares truncation, and no variant grows without a bound`,
+  };
+}
+
 export const DESIGN_CHECKS: Record<string, DesignCheck> = {
   'design.color-tokens': checkColorTokens,
   'design.type-tokens': checkTypeTokens,
@@ -767,4 +988,6 @@ export const DESIGN_CHECKS: Record<string, DesignCheck> = {
   'design.layer-names': checkLayerNames,
   'design.prototyping': checkPrototyping,
   'design.auto-layout': checkAutoLayout,
+  'design.exposed-properties': checkExposedProperties,
+  'design.layout-survives-content': checkLayoutSurvivesContent,
 };

@@ -9,6 +9,7 @@ export {
 export {
   DEFAULT_METRICS,
   DEFAULT_METRICS_BY_ID,
+  RETIRED_METRIC_IDS,
   CATEGORIES,
   metricKeys,
   type Answer,
@@ -42,7 +43,6 @@ export {
   type Quadrant,
 } from './score';
 export {
-  CODE_CHECKS,
   collectCodePropNames,
   type CodeCheck,
   normalisePropName,
@@ -50,6 +50,22 @@ export {
   type CodeConnectFacts,
   type CodeFacts,
 } from './code-checks';
+// The public registry is the full set: source-reading and structural checks.
+export {
+  ALL_CODE_CHECKS as CODE_CHECKS,
+  STRUCTURE_CHECKS,
+  checkExtensible,
+  checkNoHardcodedCopy,
+  checkDependencyDirection,
+} from './structure-checks';
+export { lowestMajor, reactMajorFor, type ProjectFacts } from './project';
+export {
+  PARITY_CHECKS,
+  checkVariantValues,
+  checkDefaultValues,
+  collectCodePropShapes,
+  type CodePropShape,
+} from './parity-checks';
 export {
   CODE_CONNECT_CONFIG,
   extractCodeConnect,
@@ -80,6 +96,9 @@ export {
 } from './figma-checks';
 export {
   checkDocSection,
+  checkDocumentedProps,
+  documentedProps,
+  type DocsPropsFacts,
   extractHeadings,
   extractHtmlHeadings,
   headingMatches,

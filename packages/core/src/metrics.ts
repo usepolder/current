@@ -1,18 +1,19 @@
 /**
- * The 29 default metrics, transcribed from a production design system's "Component Health"
- * audit sheet (Template tab), less four that were dropped and plus one that
- * was added. Teams can disable any of them or flip an
- * automated one to manual in `.polder.yml`; this is a starting point, not a
- * fixed rubric.
+ * The default metrics. They started as a production design system's
+ * "Component Health" audit sheet (Template tab) and have been narrowed to one
+ * question: is the design system built robustly enough to be reused without
+ * drifting? Teams can disable any of them or flip an automated one to manual
+ * in `.polder.yml`; this is a starting point, not a fixed rubric.
  *
- * CO13 is not from the sheet. It was added because text contrast is the most
- * common real accessibility defect in a design system and no norm here
- * measured it on either axis — DE2 asks about the design, which no API
- * answers. See `checkContrast` for why it is a code norm and why it does not
- * close DE2.
+ * That question is the line every norm here is held to. A norm stays if it
+ * measures the system's structure — tokens, the component API, parity between
+ * code, Figma and docs. It goes if it audits the output — what renders, what a
+ * screen reader announces, what contrast a pixel has. Whether a component is
+ * accessible is real and important, but it is product quality, and axe,
+ * Lighthouse and testing with assistive technology answer it better than a
+ * rubric can. Scoring it here made the number mean two things at once (#39).
  *
- * Four of the sheet's norms are not here, and this comment block is the
- * record of why. Ids are never renumbered — DE9 stays DE9 — so existing
+ * Twelve norms are not here, and this comment block is the record of why. Ids are never renumbered — DE9 stays DE9 — so existing
  * answer files keep pointing at the norms they were written for, and each gap
  * in the sequence is the record of what was dropped.
  *
@@ -36,20 +37,34 @@
  *     per-system and plenty of systems have none, so the metric was
  *     inapplicable for most adopters while still scoring them. Its removal
  *     is what takes the documentation axis to fully automated.
+ *   - CO1, CO2, CO3, CO4, CO5, CO13, DE2 and DO9 audit accessibility of the
+ *     output, under the line drawn above (#39). CO1 forced pointer states on
+ *     the rendered page; CO2 and CO5 audited the markup for ARIA and text
+ *     alternatives; CO3 tab-walked the page; CO4 read what a screen reader
+ *     announces; CO13 measured rendered contrast; DE2 asked about contrast in
+ *     the design and was the last manual norm; DO9 asked for accessibility
+ *     guidance in the docs. CO13 was not from the sheet at all — it was added
+ *     in #35 and retired in #39 before anyone adopted it.
+ *
+ *     Their CHECKS are not deleted. Every one stays registered, and a custom
+ *     norm can name any check, so a team that wants accessibility scored
+ *     adds it back in config (the README has the block, with A11Y ids so
+ *     these retired ones are never reused). DE6 and DE9 keep the
+ *     system-structure half of CO1: whether interaction states are DECLARED.
+ *
+ *     Two accessibility properties are system structure and could earn a
+ *     norm on their own merits later: accessible names enforced by the props
+ *     API, and contrast-safe token pairs. Neither is here yet.
  *
  * `check` is the id of an automated check, or null when only a human can
- * answer. Four input contracts are in play: static checks read the
- * component's source, design checks read its Figma node, `code.keyboard` /
- * `code.breakpoints` / `code.states` probe a rendered `preview:` URL in a
- * real browser — the only way to answer those three, and the reason they are
- * no longer null — and `code.figma-connect` reads the repo's Code Connect
- * mappings, which is where the code/design correspondence is actually
- * written down. What is automatable was settled by probing Figma's published
- * OpenAPI spec (figma/rest-api-spec): `AnnotationsTrait` is declared with an
- * empty property bag, so the REST API exposes no accessibility annotations —
- * which is why DE2 stays manual. CO4 escaped that constraint by moving to the
- * side where the evidence lives: a rendered page has an accessibility tree,
- * and a virtual screen reader reads it. `layoutMode`,
+ * answer — though since #39 no default norm is null. Four input contracts
+ * are in play: static checks read the component's source, design checks read
+ * its Figma node, `code.breakpoints` and `code.text-expansion` probe a
+ * rendered `preview:` URL in a real browser, and `code.figma-connect` reads
+ * the repo's Code Connect mappings, which is where the code/design
+ * correspondence is actually written down. What is automatable on the design
+ * side was settled by probing Figma's published OpenAPI spec
+ * (figma/rest-api-spec). `layoutMode`,
  * `boundVariables`, `componentPropertyDefinitions`, `cornerRadius` and
  * `transitionNodeID` ARE returned, so the token/auto-layout/prototyping
  * checks are real.
@@ -84,71 +99,29 @@ export interface MetricDef {
   params?: Record<string, unknown>;
 }
 
+/**
+ * Every id that has left the default rubric. Never reused, by a later
+ * built-in or by a custom norm: an answers file written for the old norm
+ * would otherwise silently answer the new one. The header above records why
+ * each one went.
+ */
+export const RETIRED_METRIC_IDS: readonly string[] = [
+  'CO1',
+  'CO2',
+  'CO3',
+  'CO4',
+  'CO5',
+  'CO11',
+  'CO13',
+  'DE2',
+  'DE8',
+  'DE11',
+  'DO1',
+  'DO9',
+];
+
 export const DEFAULT_METRICS: readonly MetricDef[] = [
   // ---- Code (component implementation) ----
-  {
-    id: 'CO1',
-    category: 'code',
-    subcategory: 'A11y',
-    guideline: 'Component encompasses and displays all necessary interaction states',
-    note: 'Default, hover, pressed, focus, loading, selected, active, error, disabled',
-    // "Displays" is a visual claim, and the rules behind it usually sit in a
-    // stylesheet, a utility-class string or a wrapped primitive, so the
-    // component's own source cannot answer it. A rendered `preview:` can:
-    // hover, pressed and focus are forced on each interactive element and
-    // compared with its resting style. The other six states need the
-    // component driven through its props, and *which* states are "necessary"
-    // is the judgment the metric is really asking for — so a clean probe is
-    // an N/A, never a Yes. It can prove a missing state, not a complete set.
-    check: 'code.states',
-  },
-  {
-    id: 'CO2',
-    category: 'code',
-    subcategory: 'A11y',
-    guideline: 'ARIA attributes are defined',
-    check: 'code.aria-attributes',
-  },
-  {
-    id: 'CO3',
-    category: 'code',
-    subcategory: 'A11y',
-    guideline: 'Component is accessible by keyboard',
-    note: 'Including space, enter and arrow keys to navigate or interact',
-    // Not answerable from source: native elements are keyboard-accessible
-    // with no explicit handler, so "no onKeyDown" would produce constant
-    // false "No"s. Answered instead by probing a rendered `preview:` — Tab
-    // reachability and a visible focus ring. Components with no preview
-    // mapped report N/A and stay a human's call.
-    check: 'code.keyboard',
-  },
-  {
-    id: 'CO4',
-    category: 'code',
-    subcategory: 'A11y',
-    guideline: 'Component is accessible by screenreader',
-    // The note used to read `cmd + f5 to enable the screenreader`, which is
-    // an instruction to a human rather than a check. A virtual screen reader
-    // reads the accessibility tree of the rendered preview, so the No cases
-    // — unnamed control, interaction with no role, a state the reader never
-    // announces — are now found by machine. The clean case stays N/A: a
-    // virtual AT cannot establish that a screen reader user can USE the
-    // component, which is what the guideline asks. `params: { driver: "real" }`
-    // adds real VoiceOver, NVDA or Orca as corroboration, which is the only
-    // way this norm answers Yes — one check id, two drivers, because a second
-    // check would score CO4 twice.
-    note: 'Answered from a screen reader against the rendered preview',
-    check: 'code.screenreader',
-  },
-  {
-    id: 'CO5',
-    category: 'code',
-    subcategory: 'A11y',
-    guideline:
-      'Non-text content (images, icons) have a text alternative that serves the equivalent purpose',
-    note: 'WCAG SC 1.1.1',
-    check: 'code.text-alternatives',
-  },
   {
     id: 'CO6',
     category: 'code',
@@ -209,34 +182,66 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     // where the evidence lives.
     check: 'code.figma-connect',
   },
+
   {
-    // CO13 is an ADDITION, not a conversion. CO11 and DO1 were retired and
-    // their ids are gone for good, so this is 13 rather than a reuse.
-    //
-    // Contrast is the most common real accessibility defect in a design
-    // system and until now no norm in this rubric looked for it on either
-    // axis as a measurement — DE2 asks about the design and no API answers
-    // it. It is also one of very few accessibility claims with a genuine Yes
-    // available: a computed ratio against a threshold is arithmetic, not
-    // judgment.
-    //
-    // This does NOT answer DE2 and must never be described as doing so. DE2
-    // is scored against the Figma node and asks about the design; every
-    // engine in this family audits rendered HTML. Answering DE2 from the
-    // implementation would put a code-axis measurement on the design axis and
-    // hide the exact drift the quadrant exists to surface. See
-    // `checkContrast` for the whole argument. DE2 stays manual.
-    //
-    // Text only. The engine has no WCAG 1.4.11 rule, so non-text contrast —
-    // an icon against its background, a focus ring against its surface — is
-    // measured by nothing here, and the guideline says text so that the norm
-    // does not claim it.
-    id: 'CO13',
+    id: 'CO16',
     category: 'code',
-    subcategory: 'A11y',
-    guideline: 'Text contrast meets WCAG AA in the rendered component',
-    note: 'Answered from a WCAG contrast engine against the rendered preview',
-    check: 'code.contrast',
+    subcategory: 'Reusability',
+    guideline: 'Component can be extended without forking: ref forwarded, unknown props passed on, className merged',
+    // Each of the three is something a product team otherwise rebuilds, by
+    // wrapping or copying the component — which is where drift starts. Ref
+    // forwarding is judged against the React version the system declares,
+    // because a props spread carries a ref on 19 and silently drops it on 18
+    // (#41).
+    check: 'code.extensible',
+  },
+
+  {
+    id: 'CO17',
+    category: 'code',
+    subcategory: 'Reusability',
+    guideline: 'Component does not hardcode copy: its text arrives as props, children or messages',
+    // A literal "Close" in the markup works for one product, in one language
+    // and one tone, and every other product forks the component to change
+    // it. Reads only what is rendered, so a prop default or a translation
+    // key is not copy (#42).
+    check: 'code.no-hardcoded-copy',
+  },
+
+  {
+    id: 'CO18',
+    category: 'code',
+    subcategory: 'Reusability',
+    guideline: "Component depends only on the system and packages, and on other components through their entry points",
+    // An import that climbs out of the design system couples the component
+    // to the product it serves; one that reaches into another component's
+    // folder depends on how that component is built today rather than what
+    // it promises. Aliased imports are counted and left unjudged: resolving
+    // them needs the project's config, and a guess would invent findings
+    // (#43).
+    check: 'code.dependency-direction',
+  },
+
+  {
+    id: 'CO14',
+    category: 'code',
+    subcategory: 'Naming',
+    guideline: 'Variant values match between code and Figma',
+    // CO9 compares property names only, so a `size` on both sides passes
+    // while Figma offers `xl` and code cannot build it. This compares the
+    // values: Figma's variant options against the code prop's literal union
+    // (#40).
+    check: 'code.figma-variant-values',
+  },
+  {
+    id: 'CO15',
+    category: 'code',
+    subcategory: 'Naming',
+    guideline: 'Default values match between code and Figma',
+    // Same values, different starting state is still drift: designs show
+    // one default and code ships another. Variant and boolean properties
+    // only, since a TEXT default is placeholder content, not a state (#40).
+    check: 'code.figma-default-values',
   },
 
   // ---- Design (Figma) ----
@@ -246,15 +251,6 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     subcategory: 'Foundations',
     guideline: 'Colour tokens are applied',
     check: 'design.color-tokens',
-  },
-  {
-    id: 'DE2',
-    category: 'design',
-    subcategory: 'A11y',
-    guideline:
-      'Sufficient contrast between text/icon and background behind the text/icon (level AA)',
-    note: 'WCAG SC 1.4.3 — the REST API exposes no resolved text-over-background pairing',
-    check: null,
   },
   {
     id: 'DE3',
@@ -320,6 +316,32 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     check: 'design.auto-layout',
   },
 
+  {
+    id: 'DE12',
+    category: 'design',
+    subcategory: 'Reusability',
+    guideline: 'Text layers and nested instances are exposed as component properties',
+    // Designers detach an instance when they need to change something the
+    // component does not let them change, and a detached instance never
+    // updates again. Binding labels to TEXT properties and nested instances
+    // to INSTANCE_SWAP properties removes the reason. DE11 is retired, so
+    // this is DE12 (#45).
+    check: 'design.exposed-properties',
+  },
+
+  {
+    id: 'DE13',
+    category: 'design',
+    subcategory: 'Reusability',
+    guideline: 'Layout survives longer content: text grows or declares truncation, and growth is bounded',
+    // The Figma side of CO10. A label pinned to a fixed box breaks the first
+    // time a designer types a longer one, and they detach to fix it. Text
+    // that wraps is fine; text that can do neither and declares no
+    // truncation is not, and nor is a variant that grows without a maxWidth
+    // (#46).
+    check: 'design.layout-survives-content',
+  },
+
   // ---- Documentation ----
   // The doc checks look for a matching heading in the mapped doc file. That
   // proves a section exists, not that it is any good — `--verbose` prints the
@@ -379,18 +401,24 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
   {
     id: 'DO8',
     category: 'documentation',
-    subcategory: 'A11y',
+    // Was 'A11y'. It asks whether interaction states are documented, which is
+    // about the component's behaviour, not about accessibility; the label
+    // came from the audit sheet and outlived the A11y norms around it.
+    subcategory: 'Quality',
     guideline: 'Interaction states are documented',
     check: 'docs.section',
     params: { headings: ['states', 'interaction states', 'state'] },
   },
   {
-    id: 'DO9',
+    id: 'DO10',
     category: 'documentation',
-    subcategory: 'A11y',
-    guideline: 'A11y guidelines are documented',
-    check: 'docs.section',
-    params: { headings: ['accessibility', 'a11y', 'aria'] },
+    subcategory: 'Quality',
+    guideline: 'Documented props match the code',
+    // A props table listing a removed prop, or missing an added one, has
+    // consumers building against an API that does not exist: drift in the
+    // place people learn the system from. A table generated from the types
+    // (ArgTypes, Controls) cannot drift and answers Yes (#44).
+    check: 'docs.props',
   },
 ];
 

@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as yaml from 'js-yaml';
 import { isDocsUrl } from './docs-source';
 import { ConfigValidationError, ParseError, PathTraversalError } from './errors';
-import { CODE_CHECKS } from './code-checks';
+import { ALL_CODE_CHECKS as CODE_CHECKS } from './structure-checks';
 import {
   DEFAULT_BREAKPOINT_WIDTHS,
   DRIVER_KEY,
@@ -19,7 +19,13 @@ import {
   MIN_BOUND_KEY,
   STATES_KEY,
 } from './figma-checks';
-import { CATEGORIES, DEFAULT_METRICS, type MetricCategory, type MetricDef } from './metrics';
+import {
+  CATEGORIES,
+  DEFAULT_METRICS,
+  RETIRED_METRIC_IDS,
+  type MetricCategory,
+  type MetricDef,
+} from './metrics';
 
 /** Bump when a change to the `current:` block would break configs in the wild. */
 export const CURRENT_SCHEMA_VERSION = 1;
@@ -212,9 +218,11 @@ const CHECK_PARAM: Record<string, ParamSpec> = {
   ...Object.fromEntries(Object.keys(LIVE_CHECKS).map((id) => [id, null])),
   ...Object.fromEntries(Object.keys(DESIGN_CHECKS).map((id) => [id, null])),
   'docs.section': { kind: 'strings', key: 'headings' },
+  'docs.props': null,
   'code.contains': { kind: 'strings', key: 'text' },
   'code.forbids': { kind: 'strings', key: 'text' },
   'design.color-tokens': MIN_BOUND_SPEC,
+  'design.exposed-properties': MIN_BOUND_SPEC,
   'design.type-tokens': MIN_BOUND_SPEC,
   'design.spacing-tokens': MIN_BOUND_SPEC,
   'design.radius-tokens': MIN_BOUND_SPEC,
@@ -464,6 +472,13 @@ function parseCustom(raw: unknown, taken: Set<string>): MetricDef[] {
       throw new ConfigValidationError(
         `${where}.id: "${id}" is already a metric id. ` +
           'Pick another, or change the built-in one under `metrics.override`.',
+      );
+    }
+    if (RETIRED_METRIC_IDS.includes(id)) {
+      throw new ConfigValidationError(
+        `${where}.id: "${id}" is a retired metric id, and retired ids are never reused — ` +
+          'an answers file written for the old norm would silently answer the new one. ' +
+          'Pick another id.',
       );
     }
     taken.add(id);

@@ -126,24 +126,13 @@ describe('scanRepo — end to end against a fixture design system', () => {
     expect(wrapper).toMatchObject({ answer: 'No', source: 'auto' });
   });
 
+  // CO6 is automated, and Button maps no preview, so its probe answers N/A.
+  // The human's Yes wins over that, as it would over any automated answer.
   it('prefers a human answer over an automated check', async () => {
     const report = await scanFixture();
     const button = byName(report, 'Button');
-    const co1 = button.metrics.find((m) => m.metricId === 'CO1');
-    expect(co1).toMatchObject({ answer: 'Yes', source: 'manual' });
-  });
-
-  /**
-   * CO1's probe can prove a missing hover, pressed or focus state; it cannot
-   * prove a complete set. So an unmapped (or clean) preview leaves the norm
-   * where it started — waiting for a person — rather than quietly booking it
-   * as an automated N/A and dropping it out of the questions to answer.
-   */
-  it('leaves a norm its check could not settle as unanswered, with the evidence', async () => {
-    const ghost = byName(await scanFixture(), 'Ghost');
-    const co1 = ghost.metrics.find((m) => m.metricId === 'CO1');
-    expect(co1).toMatchObject({ answer: 'N/A', source: 'unanswered' });
-    expect(co1?.evidence).toContain('no preview URL mapped');
+    const co6 = button.metrics.find((m) => m.metricId === 'CO6');
+    expect(co6).toMatchObject({ answer: 'Yes', source: 'manual' });
   });
 
   it('records evidence for every automated answer', async () => {
@@ -180,13 +169,21 @@ describe('scanRepo — end to end against a fixture design system', () => {
 
   it('detects the fixture\u2019s real code facts', async () => {
     const button = byName(await scanFixture(), 'Button');
-    expect(button.metrics.find((m) => m.metricId === 'CO2')?.answer).toBe('Yes');
     expect(button.metrics.find((m) => m.metricId === 'CO7')?.answer).toBe('Yes');
     expect(button.metrics.find((m) => m.metricId === 'CO9')?.answer).toBe('Yes');
+    // The fixture's Figma set and Button's props agree on values (Size and
+    // State) and on the one default either side declares (Disabled: false).
+    expect(button.metrics.find((m) => m.metricId === 'CO14')).toMatchObject({ answer: 'Yes' });
+    expect(button.metrics.find((m) => m.metricId === 'CO14')?.evidence).toContain('Size, State');
+    expect(button.metrics.find((m) => m.metricId === 'CO15')).toMatchObject({ answer: 'Yes' });
+    // The fixture's Label text layer is bound to no TEXT property, so a
+    // designer would have to detach the instance to change it.
+    const de12 = button.metrics.find((m) => m.metricId === 'DE12');
+    expect(de12).toMatchObject({ answer: 'No', source: 'auto' });
+    expect(de12?.evidence).toContain('Label (text)');
 
     const wrapper = byName(await scanFixture(), 'Wrapper');
     expect(wrapper.metrics.find((m) => m.metricId === 'CO7')?.answer).toBe('No');
-    expect(wrapper.metrics.find((m) => m.metricId === 'CO5')?.answer).toBe('No');
     expect(wrapper.metrics.find((m) => m.metricId === 'CO8')?.answer).toBe('No');
   });
 
@@ -211,10 +208,9 @@ describe('scanRepo — end to end against a fixture design system', () => {
   });
 
   it('does not score the design axis from leftover manual answers on a degraded run', async () => {
-    // Button has two manual design answers, both Yes. Scoring the axis from
-    // those alone would report design 100% while seven automated design
-    // metrics never ran — a confident number for a measurement that did not
-    // happen.
+    // Button has a manual design answer, Yes. Scoring the axis from that
+    // alone would report design 100% while the automated design metrics never
+    // ran — a confident number for a measurement that did not happen.
     const report = await scanFixture({ figma: fixtureFigma({ fail: 403 }) });
     const design = byName(report, 'Button').scores.design;
 
@@ -223,8 +219,8 @@ describe('scanRepo — end to end against a fixture design system', () => {
     expect(report.totals.design).toBeNull();
 
     // The human answers are still in the report, just not scored.
-    const de2 = byName(report, 'Button').metrics.find((m) => m.metricId === 'DE2');
-    expect(de2).toMatchObject({ answer: 'Yes', source: 'manual' });
+    const de7 = byName(report, 'Button').metrics.find((m) => m.metricId === 'DE7');
+    expect(de7).toMatchObject({ answer: 'Yes', source: 'manual' });
   });
 
   it('still scores the design axis when Figma is down but no design metric needed it', async () => {
@@ -236,7 +232,7 @@ components:
   Button:
     figma: "1:10"
 metrics:
-  manual: [DE1, DE2, DE3, DE4, DE5, DE6, DE7, DE9, DE10]
+  manual: [DE1, DE3, DE4, DE5, DE6, DE7, DE9, DE10, DE12, DE13]
 `));
     const answers = parseAnswers('Button:\n  DE1: Yes\n  DE3: Yes\n  DE7: No\n');
 

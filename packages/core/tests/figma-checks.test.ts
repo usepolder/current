@@ -925,3 +925,211 @@ describe('isDocsUrl', () => {
     expect(isDocsUrl('./docs/button.mdx')).toBe(false);
   });
 });
+
+describe('design.exposed-properties (DE12)', () => {
+  const check = DESIGN_CHECKS['design.exposed-properties'];
+
+  const text = (id: string, name: string, ref?: string): FigmaNode => ({
+    id,
+    name,
+    type: 'TEXT',
+    ...(ref === undefined ? {} : { componentPropertyReferences: { characters: ref } }),
+  });
+  const instance = (id: string, name: string, ref?: string, children: FigmaNode[] = []): FigmaNode => ({
+    id,
+    name,
+    type: 'INSTANCE',
+    children,
+    ...(ref === undefined ? {} : { componentPropertyReferences: { mainComponent: ref } }),
+  });
+  const set = (...variants: FigmaNode[][]): FigmaNode =>
+    component({
+      type: 'COMPONENT_SET',
+      children: variants.map((kids, i) => component({ id: `1:${i + 2}`, name: `State=${i}`, children: kids })),
+    });
+
+  it('answers Yes when every label and nested instance is a property', () => {
+    const r = check({
+      componentName: 'B',
+      node: set([text('2:1', 'Label', 'Label#4:5'), instance('2:2', 'Icon', 'Icon#4:6')]),
+    });
+    expect(r.answer).toBe('Yes');
+    expect(r.evidence).toContain('all 2');
+  });
+
+  it('answers No for a label a designer would have to detach to change', () => {
+    const r = check({ componentName: 'B', node: set([text('2:1', 'Label')]) });
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('Label (text)');
+    expect(r.evidence).toContain('detaching');
+  });
+
+  it('answers No for a nested instance that cannot be swapped', () => {
+    const r = check({
+      componentName: 'B',
+      node: set([text('2:1', 'Label', 'Label#4:5'), instance('2:2', 'Icon')]),
+    });
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('Icon (instance)');
+  });
+
+  // Text inside an Icon instance is the Icon component's to expose.
+  it('stops at a nested instance and does not count the text inside it', () => {
+    const r = check({
+      componentName: 'B',
+      node: set([instance('2:2', 'Badge', 'Badge#4:6', [text('3:1', 'Count')])]),
+    });
+    expect(r.answer).toBe('Yes');
+    expect(r.evidence).toContain('all 1');
+  });
+
+  it('checks every variant, not just the first', () => {
+    const r = check({
+      componentName: 'B',
+      node: set([text('2:1', 'Label', 'Label#4:5')], [text('3:1', 'Label')]),
+    });
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('1 of 2');
+  });
+
+  it('reads a single COMPONENT as its own variant', () => {
+    const r = check({ componentName: 'B', node: component({ children: [text('2:1', 'Label', 'L#1:1')] }) });
+    expect(r.answer).toBe('Yes');
+  });
+
+  it('walks into frames inside a variant', () => {
+    const frame: FigmaNode = { id: '2:9', name: 'Content', type: 'FRAME', children: [text('2:1', 'Label')] };
+    expect(check({ componentName: 'B', node: set([frame]) }).answer).toBe('No');
+  });
+
+  // The spinner inside a loading button is fixed on purpose; no field says
+  // so, so a team that has such parts re-tunes the threshold.
+  it('lets min_bound forgive a deliberately fixed part', () => {
+    const node = set([
+      text('2:1', 'Label', 'Label#4:5'),
+      instance('2:2', 'Icon', 'Icon#4:6'),
+      instance('2:3', 'Spinner'),
+    ]);
+    expect(check({ componentName: 'B', node }).answer).toBe('No');
+    const r = check({ componentName: 'B', node }, { min_bound: 60 });
+    expect(r.answer).toBe('Yes');
+    expect(r.evidence).toContain('67% ≥ 60% threshold');
+  });
+
+  it('answers N/A with nothing to expose', () => {
+    expect(check({ componentName: 'B', node: set([]) }).answer).toBe('N/A');
+  });
+});
+
+describe('design.layout-survives-content (DE13)', () => {
+  const check = DESIGN_CHECKS['design.layout-survives-content'];
+
+  const label = (extra: Partial<FigmaNode>, style: Record<string, unknown> = {}): FigmaNode => ({
+    id: '2:1',
+    name: 'Label',
+    type: 'TEXT',
+    style,
+    ...extra,
+  });
+  const variant = (kids: FigmaNode[], extra: Partial<FigmaNode> = {}): FigmaNode =>
+    component({ type: 'COMPONENT_SET', children: [component({ id: '1:2', name: 'Size=md', children: kids, ...extra })] });
+
+  it('answers Yes for a label that hugs inside a variant with a maxWidth', () => {
+    const r = check({
+      componentName: 'B',
+      node: variant([label({ layoutSizingHorizontal: 'HUG' })], {
+        layoutMode: 'HORIZONTAL',
+        layoutSizingHorizontal: 'HUG',
+        maxWidth: 320,
+      }),
+    });
+    expect(r.answer).toBe('Yes');
+  });
+
+  it('answers No for a label pinned in both directions with no truncation', () => {
+    const r = check({
+      componentName: 'B',
+      node: variant([label({ layoutSizingHorizontal: 'FIXED', layoutSizingVertical: 'FIXED' }, { textAutoResize: 'NONE' })]),
+    });
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('cannot grow');
+    expect(r.evidence).toContain('Label');
+  });
+
+  // Figma omits a default, and NONE is textAutoResize's default.
+  it('reads an absent textAutoResize as NONE once the layer has sizing', () => {
+    const r = check({
+      componentName: 'B',
+      node: variant([label({ layoutSizingHorizontal: 'FIXED', layoutSizingVertical: 'FIXED' })]),
+    });
+    expect(r.answer).toBe('No');
+  });
+
+  // A declared limit is the bound being defined, as in CO10.
+  it.each([{ textTruncation: 'ENDING' }, { textTruncation: 'ENDING', maxLines: 2 }, { textAutoResize: 'TRUNCATE' }])(
+    'accepts a pinned label that declares truncation: %j',
+    (style) => {
+      const r = check({
+        componentName: 'B',
+        node: variant([label({ layoutSizingHorizontal: 'FIXED', layoutSizingVertical: 'FIXED' }, style)]),
+      });
+      expect(r.answer).toBe('Yes');
+    },
+  );
+
+  // A paragraph in a card wraps; that survives longer content.
+  it('accepts fixed-width text that wraps and grows downward', () => {
+    const r = check({
+      componentName: 'B',
+      node: variant([label({ layoutSizingHorizontal: 'FIXED' }, { textAutoResize: 'HEIGHT' })]),
+    });
+    expect(r.answer).toBe('Yes');
+  });
+
+  it('answers No for a variant that grows with its text and has no maxWidth', () => {
+    const r = check({
+      componentName: 'B',
+      node: variant([label({}, { textAutoResize: 'WIDTH_AND_HEIGHT' })], {
+        layoutMode: 'HORIZONTAL',
+        layoutSizingHorizontal: 'HUG',
+      }),
+    });
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('no maxWidth');
+  });
+
+  it('reads the older primaryAxisSizingMode when layoutSizingHorizontal is absent', () => {
+    const r = check({
+      componentName: 'B',
+      node: variant([label({}, { textAutoResize: 'WIDTH_AND_HEIGHT' })], {
+        layoutMode: 'HORIZONTAL',
+        primaryAxisSizingMode: 'AUTO',
+      }),
+    });
+    expect(r.answer).toBe('No');
+  });
+
+  it('does not require a maxWidth on a fixed-width variant', () => {
+    const r = check({
+      componentName: 'B',
+      node: variant([label({ layoutSizingHorizontal: 'HUG' })], { layoutMode: 'HORIZONTAL', layoutSizingHorizontal: 'FIXED' }),
+    });
+    expect(r.answer).toBe('Yes');
+  });
+
+  it('does not judge text inside a nested instance', () => {
+    const inner: FigmaNode = {
+      id: '2:5',
+      name: 'Badge',
+      type: 'INSTANCE',
+      children: [label({ layoutSizingHorizontal: 'FIXED', layoutSizingVertical: 'FIXED' })],
+    };
+    expect(check({ componentName: 'B', node: variant([inner]) }).answer).toBe('N/A');
+  });
+
+  // No sizing fields at all: reading absence as a verdict is how a check ends
+  // up wrong on every component it looks at.
+  it('answers N/A when no text layer carries sizing the API reports', () => {
+    expect(check({ componentName: 'B', node: variant([{ id: '2:1', name: 'Label', type: 'TEXT' }]) }).answer).toBe('N/A');
+  });
+});

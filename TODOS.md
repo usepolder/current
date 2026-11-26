@@ -9,11 +9,11 @@ Revisiting one is cheap. Each entry says what would have to change first.
 
 ## Validating the automated checks against something other than ourselves
 
-28 of the 29 metrics are automated, and nothing independent has ever confirmed
+All 29 metrics are automated, and nothing independent has ever confirmed
 that any of them agrees with a human. The dogfood answers file covers the
 *manual* metrics, deliberately — so it cannot double as ground truth for the
 automated ones. The README now states the confidence per axis rather than
-implying the whole score is measured (code 12/12, design 8/9, docs 8/8).
+implying the whole score is measured (code 11/11, design 10/10, docs 8/8).
 
 #36 is what looking rather than validating turns up: DE1, DE4 and DE5 were
 scoring Figma's own component-set chrome as raw values, answering No on
@@ -66,8 +66,9 @@ Revisit only if something in the archive needs to run, rather than be kept.
 
 ## A real screen reader on a hosted runner
 
-CO4's `driver: real` corroborates a clean read with VoiceOver, NVDA or Orca,
-and is the only way the norm answers Yes. It cannot run on a GitHub-hosted
+The opt-in `code.screenreader` check's `driver: real` corroborates a clean
+read with VoiceOver, NVDA or Orca, and is the only way it answers Yes. (It was
+CO4 until #39 moved accessibility out of the default rubric.) It cannot run on a GitHub-hosted
 runner, and the reason is not the one #33 assumed: guidepup 0.40 does have a
 Linux driver (Orca), so "no Linux support" is out of date. What it needs is a
 **desktop session** — a visible, frontmost browser window and, on Linux,
@@ -90,10 +91,13 @@ Orca run has ever been observed — this was built on a headless Linux
 container. What those readers do when they actually start is the one part of
 this that nobody has watched.
 
-## Contrast in the Figma design (DE2)
+## Contrast in the Figma design (formerly DE2)
 
-DE2 is the last manual norm in the default set, and #35 established that it
-stays that way. The contrast engines all audit rendered HTML in a browser;
+DE2 was the last manual norm, and #39 retired it with the other accessibility
+audits: whether the design's output is accessible is not a system-health
+question. This entry stays because the technical finding outlives the norm,
+and anyone adding a design-side contrast check as a custom norm should know
+it. #35 established why nothing automates it. The contrast engines all audit rendered HTML in a browser;
 none can read a Figma node, so CO13 answers the code side and nothing answers
 the design side.
 

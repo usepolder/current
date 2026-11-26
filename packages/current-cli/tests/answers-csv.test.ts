@@ -22,6 +22,18 @@ function tempCopyOfFixture(): string {
   return dir;
 }
 
+/**
+ * Every default norm is automated since #39, so on the fixture as shipped
+ * `current export` has nothing to ask. A team that wants a human to answer
+ * something flips it to manual, which is exactly the case export exists for,
+ * so these tests do the same.
+ */
+function withManualNorm(dir: string, id = 'CO8'): string {
+  const file = path.join(dir, '.polder.yml');
+  fs.appendFileSync(file, `  metrics:\n    manual: [${id}]\n`);
+  return dir;
+}
+
 afterEach(() => {
   while (temps.length > 0) fs.rmSync(temps.pop()!, { recursive: true, force: true });
 });
@@ -248,7 +260,7 @@ describe('mergeAnswers', () => {
 
 describe('run export / import', () => {
   it('writes a CSV of the open questions and no HTML report', async () => {
-    const dir = tempCopyOfFixture();
+    const dir = withManualNorm(tempCopyOfFixture());
     const csv = path.join(dir, 'q.csv');
     const r = await invoke(['export', dir, '--file', csv]);
     expect(r.code).toBe(0);
@@ -261,7 +273,7 @@ describe('run export / import', () => {
   });
 
   it('round-trips: export, fill one in, import, and it lands in the answers file', async () => {
-    const dir = tempCopyOfFixture();
+    const dir = withManualNorm(tempCopyOfFixture());
     const csv = path.join(dir, 'q.csv');
     await invoke(['export', dir, '--file', csv]);
 
@@ -291,7 +303,7 @@ describe('run export / import', () => {
   });
 
   it('changes nothing when every answer cell is still blank', async () => {
-    const dir = tempCopyOfFixture();
+    const dir = withManualNorm(tempCopyOfFixture());
     const csv = path.join(dir, 'q.csv');
     await invoke(['export', dir, '--file', csv]);
     const before = fs.existsSync(path.join(dir, '.polder.answers.yml'));

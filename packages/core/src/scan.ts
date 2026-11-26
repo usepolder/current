@@ -1,7 +1,9 @@
+import { reactMajorFor, type ProjectFacts } from './project';
 import * as fs from 'fs';
 import * as path from 'path';
 import { lookupAnswer, type AnswerBook } from './answers';
-import { CODE_CHECKS, type CheckResult, type CodeConnectFacts, type CodeFacts } from './code-checks';
+import { collectCodePropNames, type CheckResult, type CodeConnectFacts, type CodeFacts } from './code-checks';
+import { ALL_CODE_CHECKS as CODE_CHECKS } from './structure-checks';
 import {
   CODE_CONNECT_CONFIG,
   extractCodeConnect,
@@ -11,7 +13,13 @@ import {
   type CodeConnectIndex,
 } from './code-connect';
 import { resolveComponentPaths, type ComponentMapping, type CurrentConfig } from './config';
-import { checkDocSection, extractHeadings, extractHtmlHeadings, type DocsFacts } from './docs-checks';
+import {
+  checkDocSection,
+  checkDocumentedProps,
+  extractHeadings,
+  extractHtmlHeadings,
+  type DocsFacts,
+} from './docs-checks';
 import {
   isDocsUrl,
   renderDocsPages,
@@ -108,6 +116,8 @@ interface LoadedComponent {
   related: RelatedFiles | null;
   /** Headings found in the docs, or null when there were none to read. */
   docsHeadings: string[] | null;
+  /** The local docs file's text, for checks that read more than headings. */
+  docsSource: string | null;
   docsAbsence: DocsFacts['absence'];
   docsAbsenceDetail?: string;
   previewUrl: string | null;
@@ -118,6 +128,8 @@ interface LoadedComponent {
   figmaNode: FigmaNode | null;
   /** The Code Connect side, or null when no norm asked for it. */
   codeConnect: CodeConnectFacts | null;
+  /** Repo-level facts the code checks need, or null with no code to judge. */
+  project: ProjectFacts | null;
 }
 
 /**
@@ -205,11 +217,13 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
   }
 
   const loaded: LoadedComponent[] = [];
+  const reactCache = new Map<string, number | null>();
   for (const mapping of config.components) {
     const paths = resolvedPaths.get(mapping.name)!;
     let source: string | null = null;
     let ast: Ast | null = null;
     let related: RelatedFiles | null = null;
+    let project: ProjectFacts | null = null;
     if (paths.code !== null && fs.existsSync(paths.code)) {
       source = fs.readFileSync(paths.code, 'utf8');
       ast = parseSource(source, path.relative(repoRoot, paths.code));
@@ -220,6 +234,16 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
         if (name !== mapping.name && p.code !== null) others.add(path.resolve(p.code));
       }
       related = collectRelatedFiles(paths.code, ast, repoRoot, others);
+      const otherEntries = new Map<string, string>();
+      for (const [name, p] of resolvedPaths) {
+        if (name !== mapping.name && p.code !== null) otherEntries.set(name, path.resolve(p.code));
+      }
+      project = {
+        root: path.resolve(repoRoot),
+        entryPath: path.resolve(paths.code),
+        otherEntries,
+        reactMajor: reactMajorFor(paths.code, repoRoot, reactCache),
+      };
       logger.trace(
         `${mapping.name}: ${related.files.length} related file(s)` +
           (related.files.length > 0 ? ` — ${related.files.map((f) => f.filePath).join(', ')}` : ''),
@@ -252,6 +276,7 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
       ast,
       related,
       docsHeadings: docs.headings,
+      docsSource: docs.source ?? null,
       docsAbsence: docs.absence,
       docsAbsenceDetail: docs.detail,
       previewUrl: mapping.preview,
@@ -260,6 +285,7 @@ export async function scanRepo(opts: ScanOptions): Promise<CurrentReport> {
       probeAbsenceDetail: live.detail,
       figmaNode: mapping.figma === null ? null : figmaNodes.get(mapping.figma) ?? null,
       codeConnect: connect,
+      project,
     });
   }
 
@@ -406,7 +432,7 @@ function loadDocs(
   opts: ScanOptions,
   pages: ReadonlyMap<string, RenderedPage>,
   logger: Logger,
-): { headings: string[] | null; absence: DocsFacts['absence']; detail?: string } {
+): { headings: string[] | null; source?: string; absence: DocsFacts['absence']; detail?: string } {
   if (docs === null) return { headings: null, absence: 'unmapped' };
 
   if (!isDocsUrl(docs)) {
@@ -414,9 +440,10 @@ function loadDocs(
       logger.trace(`${component}: docs file missing at ${docs}`);
       return { headings: null, absence: 'missing' };
     }
-    const headings = extractHeadings(fs.readFileSync(docs, 'utf8'));
+    const source = fs.readFileSync(docs, 'utf8');
+    const headings = extractHeadings(source);
     logger.trace(`${component}: ${headings.length} heading(s) from the docs file`);
-    return { headings, absence: null };
+    return { headings, source, absence: null };
   }
 
   if (opts.renderDocs === undefined || opts.renderDocs === null) {
@@ -547,8 +574,11 @@ function scoreComponent(
           source: c.source ?? '',
           ast: c.ast,
           figmaPropertyNames: c.figmaNode === null ? null : figmaPropertyNames(c.figmaNode),
+          figmaPropertyDefinitions:
+            c.figmaNode === null ? null : (c.figmaNode.componentPropertyDefinitions ?? {}),
           ...(c.related === null ? {} : { related: c.related }),
           ...(c.codeConnect === null ? {} : { codeConnect: c.codeConnect }),
+          ...(c.project === null ? {} : { project: c.project }),
         };
 
   const designFacts: DesignFacts | null =
@@ -712,6 +742,19 @@ function runCheck(
     const fn = DESIGN_CHECKS[checkId];
     if (!fn) return { answer: 'N/A', evidence: `unknown check "${checkId}"` };
     return fn(args.designFacts, params);
+  }
+
+  if (checkId === 'docs.props') {
+    return checkDocumentedProps({
+      componentName: args.component.name,
+      source: args.component.docsSource,
+      hosted: args.component.docsPath !== null && isDocsUrl(args.component.docsPath),
+      absence: args.component.docsAbsence,
+      codeProps:
+        args.component.ast === null
+          ? null
+          : collectCodePropNames(args.component.ast, args.component.name),
+    });
   }
 
   if (checkId === 'docs.section') {

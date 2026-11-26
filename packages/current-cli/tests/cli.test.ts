@@ -288,7 +288,7 @@ describe('run', () => {
   it('traces every metric to stderr with --verbose', async () => {
     const dir = tempCopyOfFixture();
     const { err } = await invoke([dir, '--verbose', '--no-report']);
-    expect(err).toContain('Button/CO2');
+    expect(err).toContain('Button/CO7');
     expect(err).toMatch(/Button\/DE\d+/);
   });
 

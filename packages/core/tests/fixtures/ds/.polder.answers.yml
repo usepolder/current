@@ -1,11 +1,7 @@
+# DE7 is here only so the degraded-run test has a leftover manual design
+# answer to check is reported but not scored. DE2, which used to play that
+# part, was retired in #39.
 Button:
-  CO1: Yes
-  CO3: Yes
-  CO4: Yes
   CO6: Yes
   CO10: Yes
-  DE2: Yes
-Wrapper:
-  CO1: No
-  CO3: No
-  DE2: No
+  DE7: Yes

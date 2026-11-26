@@ -853,6 +853,132 @@ export function checkExposedProperties(facts: DesignFacts, params?: Params): Che
   };
 }
 
+/** TEXT layers in one variant, stopping at nested instances (they are another component's). */
+function textLayers(variant: FigmaNode): FigmaNode[] {
+  const out: FigmaNode[] = [];
+  const visit = (n: FigmaNode): void => {
+    for (const child of n.children ?? []) {
+      if (child.type === 'INSTANCE') continue;
+      if (child.type === 'TEXT') out.push(child);
+      visit(child);
+    }
+  };
+  visit(variant);
+  return out;
+}
+
+/** A text layer's TypeStyle, where Figma keeps `textAutoResize` and `textTruncation`. */
+function typeStyle(node: FigmaNode): Record<string, unknown> {
+  return typeof node.style === 'object' && node.style !== null ? node.style : {};
+}
+
+/** The author declared what happens to long text: an ellipsis, optionally after N lines. */
+function declaresTruncation(node: FigmaNode): boolean {
+  const st = typeStyle(node);
+  return st.textTruncation === 'ENDING' || st.textAutoResize === 'TRUNCATE';
+}
+
+/**
+ * How a text layer responds to longer content: it grows sideways, it wraps
+ * and grows downward, it is pinned in both directions, or the API gave no way
+ * to tell.
+ *
+ * `textAutoResize` absent means NONE — Figma's spec says the default is that
+ * text does not auto-resize — but only once the layer carries auto-layout
+ * sizing at all. A layer with no sizing fields of any kind is not judged:
+ * reading an absent field as a verdict is how a check ends up wrong on every
+ * component it looks at.
+ */
+function textGrowth(node: FigmaNode): 'sideways' | 'down' | 'fixed' | 'unknown' {
+  const st = typeStyle(node);
+  const auto = st.textAutoResize;
+  const h = node.layoutSizingHorizontal;
+  const v = node.layoutSizingVertical;
+  if (auto === undefined && h === undefined && v === undefined) return 'unknown';
+  if (auto === 'WIDTH_AND_HEIGHT' || h === 'HUG') return 'sideways';
+  if (auto === 'HEIGHT' || v === 'HUG') return 'down';
+  return 'fixed';
+}
+
+/** Does this frame's width follow its content? Newer field first, then the older pair. */
+function hugsWidth(node: FigmaNode): boolean {
+  if (node.layoutSizingHorizontal !== undefined) return node.layoutSizingHorizontal === 'HUG';
+  if (node.layoutMode === 'HORIZONTAL') return node.primaryAxisSizingMode === 'AUTO';
+  if (node.layoutMode === 'VERTICAL') return node.counterAxisSizingMode === 'AUTO';
+  return false;
+}
+
+/**
+ * DE13 — the component's layout survives longer content.
+ *
+ * The Figma side of CO10. A component whose label is pinned to a fixed box
+ * breaks the first time a designer types a longer one, and they fix it by
+ * detaching and resizing — drift again.
+ *
+ * Two failures:
+ *
+ *   1. A text layer that cannot grow in either direction and declares no
+ *      truncation. Text that wraps — fixed width, growing downward — is fine:
+ *      that is how a paragraph in a card is meant to behave, and calling it a
+ *      failure would flag every multi-line layout.
+ *   2. A variant whose width hugs its content, containing text that grows
+ *      sideways, with no `maxWidth`. Nothing stops it growing without limit.
+ *
+ * A declared limit satisfies the norm rather than failing it, exactly as in
+ * CO10: `textTruncation: ENDING` is the designer saying what happens to long
+ * text, and a `maxWidth` is the bound being defined.
+ */
+export function checkLayoutSurvivesContent(facts: DesignFacts): CheckResult {
+  const variants = variantsOf(facts.node);
+  const pinned: string[] = [];
+  const unbounded: string[] = [];
+  let judged = 0;
+
+  for (const variant of variants) {
+    const texts = textLayers(variant);
+    let growsSideways = false;
+    for (const text of texts) {
+      const growth = textGrowth(text);
+      if (growth === 'unknown') continue;
+      judged++;
+      if (growth === 'sideways') growsSideways = true;
+      if (growth === 'fixed' && !declaresTruncation(text)) pinned.push(text.name);
+    }
+    if (growsSideways && hugsWidth(variant)) {
+      judged++;
+      const max = variant.maxWidth;
+      if (!(typeof max === 'number' && max > 0)) unbounded.push(variant.name);
+    }
+  }
+
+  if (judged === 0) {
+    return {
+      answer: 'N/A',
+      evidence: 'no text layer carries sizing the API reports, so there is nothing to judge',
+    };
+  }
+  const problems: string[] = [];
+  if (pinned.length > 0) {
+    const names = [...new Set(pinned)];
+    problems.push(
+      `${pinned.length} text layer(s) cannot grow and declare no truncation: ${names.slice(0, 5).join(', ')}`,
+    );
+  }
+  if (unbounded.length > 0) {
+    problems.push(
+      `${unbounded.length} variant(s) grow with their text and have no maxWidth: ` +
+        unbounded.slice(0, 3).join(', '),
+    );
+  }
+  if (problems.length > 0) {
+    return { answer: 'No', evidence: problems.join('; ') };
+  }
+  return {
+    answer: 'Yes',
+    evidence: `every text layer grows or declares truncation, and no variant grows without a bound`,
+  };
+}
+
 export const DESIGN_CHECKS: Record<string, DesignCheck> = {
   'design.color-tokens': checkColorTokens,
   'design.type-tokens': checkTypeTokens,
@@ -863,4 +989,5 @@ export const DESIGN_CHECKS: Record<string, DesignCheck> = {
   'design.prototyping': checkPrototyping,
   'design.auto-layout': checkAutoLayout,
   'design.exposed-properties': checkExposedProperties,
+  'design.layout-survives-content': checkLayoutSurvivesContent,
 };

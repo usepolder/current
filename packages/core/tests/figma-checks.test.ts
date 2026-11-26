@@ -1020,3 +1020,116 @@ describe('design.exposed-properties (DE12)', () => {
     expect(check({ componentName: 'B', node: set([]) }).answer).toBe('N/A');
   });
 });
+
+describe('design.layout-survives-content (DE13)', () => {
+  const check = DESIGN_CHECKS['design.layout-survives-content'];
+
+  const label = (extra: Partial<FigmaNode>, style: Record<string, unknown> = {}): FigmaNode => ({
+    id: '2:1',
+    name: 'Label',
+    type: 'TEXT',
+    style,
+    ...extra,
+  });
+  const variant = (kids: FigmaNode[], extra: Partial<FigmaNode> = {}): FigmaNode =>
+    component({ type: 'COMPONENT_SET', children: [component({ id: '1:2', name: 'Size=md', children: kids, ...extra })] });
+
+  it('answers Yes for a label that hugs inside a variant with a maxWidth', () => {
+    const r = check({
+      componentName: 'B',
+      node: variant([label({ layoutSizingHorizontal: 'HUG' })], {
+        layoutMode: 'HORIZONTAL',
+        layoutSizingHorizontal: 'HUG',
+        maxWidth: 320,
+      }),
+    });
+    expect(r.answer).toBe('Yes');
+  });
+
+  it('answers No for a label pinned in both directions with no truncation', () => {
+    const r = check({
+      componentName: 'B',
+      node: variant([label({ layoutSizingHorizontal: 'FIXED', layoutSizingVertical: 'FIXED' }, { textAutoResize: 'NONE' })]),
+    });
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('cannot grow');
+    expect(r.evidence).toContain('Label');
+  });
+
+  // Figma omits a default, and NONE is textAutoResize's default.
+  it('reads an absent textAutoResize as NONE once the layer has sizing', () => {
+    const r = check({
+      componentName: 'B',
+      node: variant([label({ layoutSizingHorizontal: 'FIXED', layoutSizingVertical: 'FIXED' })]),
+    });
+    expect(r.answer).toBe('No');
+  });
+
+  // A declared limit is the bound being defined, as in CO10.
+  it.each([{ textTruncation: 'ENDING' }, { textTruncation: 'ENDING', maxLines: 2 }, { textAutoResize: 'TRUNCATE' }])(
+    'accepts a pinned label that declares truncation: %j',
+    (style) => {
+      const r = check({
+        componentName: 'B',
+        node: variant([label({ layoutSizingHorizontal: 'FIXED', layoutSizingVertical: 'FIXED' }, style)]),
+      });
+      expect(r.answer).toBe('Yes');
+    },
+  );
+
+  // A paragraph in a card wraps; that survives longer content.
+  it('accepts fixed-width text that wraps and grows downward', () => {
+    const r = check({
+      componentName: 'B',
+      node: variant([label({ layoutSizingHorizontal: 'FIXED' }, { textAutoResize: 'HEIGHT' })]),
+    });
+    expect(r.answer).toBe('Yes');
+  });
+
+  it('answers No for a variant that grows with its text and has no maxWidth', () => {
+    const r = check({
+      componentName: 'B',
+      node: variant([label({}, { textAutoResize: 'WIDTH_AND_HEIGHT' })], {
+        layoutMode: 'HORIZONTAL',
+        layoutSizingHorizontal: 'HUG',
+      }),
+    });
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('no maxWidth');
+  });
+
+  it('reads the older primaryAxisSizingMode when layoutSizingHorizontal is absent', () => {
+    const r = check({
+      componentName: 'B',
+      node: variant([label({}, { textAutoResize: 'WIDTH_AND_HEIGHT' })], {
+        layoutMode: 'HORIZONTAL',
+        primaryAxisSizingMode: 'AUTO',
+      }),
+    });
+    expect(r.answer).toBe('No');
+  });
+
+  it('does not require a maxWidth on a fixed-width variant', () => {
+    const r = check({
+      componentName: 'B',
+      node: variant([label({ layoutSizingHorizontal: 'HUG' })], { layoutMode: 'HORIZONTAL', layoutSizingHorizontal: 'FIXED' }),
+    });
+    expect(r.answer).toBe('Yes');
+  });
+
+  it('does not judge text inside a nested instance', () => {
+    const inner: FigmaNode = {
+      id: '2:5',
+      name: 'Badge',
+      type: 'INSTANCE',
+      children: [label({ layoutSizingHorizontal: 'FIXED', layoutSizingVertical: 'FIXED' })],
+    };
+    expect(check({ componentName: 'B', node: variant([inner]) }).answer).toBe('N/A');
+  });
+
+  // No sizing fields at all: reading absence as a verdict is how a check ends
+  // up wrong on every component it looks at.
+  it('answers N/A when no text layer carries sizing the API reports', () => {
+    expect(check({ componentName: 'B', node: variant([{ id: '2:1', name: 'Label', type: 'TEXT' }]) }).answer).toBe('N/A');
+  });
+});

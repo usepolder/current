@@ -232,7 +232,7 @@ components:
   Button:
     figma: "1:10"
 metrics:
-  manual: [DE1, DE3, DE4, DE5, DE6, DE7, DE9, DE10, DE12]
+  manual: [DE1, DE3, DE4, DE5, DE6, DE7, DE9, DE10, DE12, DE13]
 `));
     const answers = parseAnswers('Button:\n  DE1: Yes\n  DE3: Yes\n  DE7: No\n');
 

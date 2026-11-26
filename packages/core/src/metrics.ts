@@ -329,6 +329,19 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     check: 'design.exposed-properties',
   },
 
+  {
+    id: 'DE13',
+    category: 'design',
+    subcategory: 'Reusability',
+    guideline: 'Layout survives longer content: text grows or declares truncation, and growth is bounded',
+    // The Figma side of CO10. A label pinned to a fixed box breaks the first
+    // time a designer types a longer one, and they detach to fix it. Text
+    // that wraps is fine; text that can do neither and declares no
+    // truncation is not, and nor is a variant that grows without a maxWidth
+    // (#46).
+    check: 'design.layout-survives-content',
+  },
+
   // ---- Documentation ----
   // The doc checks look for a matching heading in the mapped doc file. That
   // proves a section exists, not that it is any good — `--verbose` prints the

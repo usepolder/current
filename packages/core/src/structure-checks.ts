@@ -216,8 +216,157 @@ export function checkExtensible(facts: CodeFacts): CheckResult {
   return { answer: 'Yes', evidence: `${component.name} ${passes.join(', ')}` };
 }
 
+/**
+ * Attributes whose value is presented to a person: read out by a screen
+ * reader, shown as a tooltip or placeholder, or substituted for an image.
+ * Hardcoding any of these locks the consumer into the component's wording
+ * exactly as hardcoded children do. This is a reusability claim, not an
+ * accessibility one: the question is whether the consumer can change it.
+ */
+const COPY_ATTRIBUTES = new Set([
+  'aria-label',
+  'aria-description',
+  'aria-placeholder',
+  'aria-roledescription',
+  'aria-valuetext',
+  'title',
+  'placeholder',
+  'alt',
+  'label',
+]);
+
+/**
+ * Elements whose children are message SOURCE for a translation library, not
+ * hardcoded copy: `<Trans>Save changes</Trans>` is extracted into a catalogue
+ * and translated, which is the opposite of locking the wording in.
+ */
+const TRANSLATION_ELEMENTS = new Set(['Trans', 'FormattedMessage', 'Translate', 'T']);
+
+/** Children of these are not copy at all. */
+const NON_TEXT_ELEMENTS = new Set(['style', 'script']);
+
+/** Text a person would read: it contains a letter. `×`, `/`, `…`, `2` are not copy. */
+function isCopy(text: string): boolean {
+  return /\p{L}/u.test(text);
+}
+
+/**
+ * The strings an expression can put on screen, and only those.
+ *
+ * Deliberately narrow. A string passed to a function is an argument, not
+ * output — `{t('dialog.close')}` is a translation key, `{cn('a', 'b')}` is
+ * class names — and a string in a comparison (`state === 'open'`) is never
+ * rendered. Only a literal standing where a value is produced counts: the
+ * expression itself, either branch of a ternary, or the value side of `&&`,
+ * `||` and `??`.
+ */
+function renderedStrings(expr: t.Node | null | undefined): string[] {
+  if (expr === null || expr === undefined) return [];
+  switch (expr.type) {
+    case 'StringLiteral':
+      return [expr.value];
+    case 'TemplateLiteral':
+      return [expr.quasis.map((q) => q.value.cooked ?? q.value.raw).join('')];
+    case 'ConditionalExpression':
+      return [...renderedStrings(expr.consequent), ...renderedStrings(expr.alternate)];
+    case 'LogicalExpression':
+      return expr.operator === '&&'
+        ? renderedStrings(expr.right)
+        : [...renderedStrings(expr.left), ...renderedStrings(expr.right)];
+    case 'JSXExpressionContainer':
+      return expr.expression.type === 'JSXEmptyExpression' ? [] : renderedStrings(expr.expression);
+    default:
+      return [];
+  }
+}
+
+/** One piece of hardcoded copy, as the evidence quotes it. */
+function quote(text: string, attribute?: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  const short = flat.length > 30 ? `${flat.slice(0, 29)}…` : flat;
+  return attribute === undefined ? `"${short}"` : `${attribute}="${short}"`;
+}
+
+/**
+ * CO17 — the component does not lock in its own words.
+ *
+ * Text written directly into a component's markup is text a consumer cannot
+ * change. A Dialog rendering a literal "Close" works for one product, in one
+ * language, with one tone of voice, and every other product forks it — and
+ * it cannot be translated at all. The fix is always the same: take the text
+ * as a prop or as children, or from a message function.
+ *
+ * A prop DEFAULT is not hardcoded copy: `function Dialog({ closeLabel =
+ * 'Close' })` renders `{closeLabel}`, and the consumer can override it. That
+ * falls out of reading only what is rendered — the literal sits in the
+ * parameter list, not in the markup.
+ */
+export function checkNoHardcodedCopy(facts: CodeFacts): CheckResult {
+  const chosen = chooseComponents(facts.ast, facts.componentName);
+  if (chosen.length === 0) {
+    return { answer: 'N/A', evidence: 'no component function found in the entry file' };
+  }
+  const component = chosen.find((c) => c.name === facts.componentName) ?? chosen[0];
+
+  const found: string[] = [];
+  let sawJsx = false;
+
+  const visitElement = (el: t.JSXElement): void => {
+    sawJsx = true;
+    const name = elementName(el.openingElement);
+
+    for (const attr of el.openingElement.attributes) {
+      if (attr.type !== 'JSXAttribute') continue;
+      const attrName = attributeName(attr);
+      if (attrName === null || !COPY_ATTRIBUTES.has(attrName)) continue;
+      for (const text of renderedStrings(attr.value)) {
+        if (isCopy(text)) found.push(quote(text, attrName));
+      }
+    }
+
+    if (NON_TEXT_ELEMENTS.has(name) || TRANSLATION_ELEMENTS.has(name)) return;
+    for (const child of el.children) {
+      if (child.type === 'JSXText') {
+        if (isCopy(child.value)) found.push(quote(child.value));
+      } else if (child.type === 'JSXExpressionContainer') {
+        for (const text of renderedStrings(child)) {
+          if (isCopy(text)) found.push(quote(text));
+        }
+      }
+    }
+  };
+
+  walkAst(component.fn.body, (n) => {
+    if (n.type === 'JSXElement') visitElement(n);
+    if (n.type === 'JSXFragment') {
+      sawJsx = true;
+      for (const child of n.children) {
+        if (child.type === 'JSXText' && isCopy(child.value)) found.push(quote(child.value));
+      }
+    }
+  });
+
+  if (!sawJsx) {
+    return { answer: 'N/A', evidence: `${component.name} renders no JSX` };
+  }
+  if (found.length === 0) {
+    return {
+      answer: 'Yes',
+      evidence: `${component.name} renders no hardcoded copy: its text arrives as props, children or messages`,
+    };
+  }
+  const unique = [...new Set(found)];
+  return {
+    answer: 'No',
+    evidence:
+      `${component.name} hardcodes ${unique.length} piece(s) of copy a consumer cannot change ` +
+      `or translate: ${unique.slice(0, 5).join(', ')}`,
+  };
+}
+
 export const STRUCTURE_CHECKS: Record<string, CodeCheck> = {
   'code.extensible': checkExtensible,
+  'code.no-hardcoded-copy': checkNoHardcodedCopy,
 };
 
 /**

@@ -304,3 +304,77 @@ describe('reactMajorFor', () => {
     expect(reactMajorFor(path.join(root, 'Button.tsx'), root, new Map())).toBeNull();
   });
 });
+
+describe('code.no-hardcoded-copy (CO17)', () => {
+  const check = CODE_CHECKS['code.no-hardcoded-copy'];
+  const run = (body: string) =>
+    check(facts(`export function Dialog({ title, children, onClose, closeLabel = 'Close', open }) { return ${body}; }`, { componentName: 'Dialog' }));
+
+  it('answers Yes when all text arrives as props or children', () => {
+    const r = run(`<div role="dialog"><h2>{title}</h2>{children}<button aria-label={closeLabel} onClick={onClose}>×</button></div>`);
+    expect(r.answer).toBe('Yes');
+  });
+
+  // The default lives in the parameter list, so the consumer can override it.
+  it('does not count a prop default as hardcoded', () => {
+    expect(run(`<button>{closeLabel}</button>`).answer).toBe('Yes');
+  });
+
+  it('answers No for literal text in the markup, quoting it', () => {
+    const r = run(`<div><h2>{title}</h2><button onClick={onClose}>Close</button></div>`);
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('"Close"');
+  });
+
+  it.each(['aria-label', 'title', 'placeholder', 'alt'])(
+    'answers No for a literal %s, which is copy a person is shown',
+    (attr) => {
+      const r = run(`<button ${attr}="Close dialog" onClick={onClose} />`);
+      expect(r.answer).toBe('No');
+      expect(r.evidence).toContain(`${attr}="Close dialog"`);
+    },
+  );
+
+  it('finds literals on both sides of a ternary and after &&', () => {
+    const r = run(`<div>{open ? 'Hide details' : 'Show details'}{open && 'Loading'}</div>`);
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('"Hide details"');
+    expect(r.evidence).toContain('"Show details"');
+    expect(r.evidence).toContain('"Loading"');
+  });
+
+  // A string passed to a function is an argument, not output.
+  it.each([
+    `<button>{t('dialog.close')}</button>`,
+    `<p>{formatMessage({ id: 'dialog.title' })}</p>`,
+    `<div className={cn('a', 'b')}>{children}</div>`,
+    `<div>{open === 'yes' ? title : children}</div>`,
+  ])('does not count strings that are never rendered: %s', (jsx) => {
+    expect(run(jsx).answer).toBe('Yes');
+  });
+
+  it.each(['×', '·', '/', '…', '—', '2', ' '])('does not count %j, which is not copy', (text) => {
+    expect(run(`<span>{title}<span aria-hidden="true">${text}</span></span>`).answer).toBe('Yes');
+  });
+
+  // Translation libraries extract these children into a catalogue.
+  it('does not count message source inside <Trans>', () => {
+    expect(run(`<p><Trans>Are you sure you want to delete this?</Trans></p>`).answer).toBe('Yes');
+  });
+
+  it('ignores the contents of <style>', () => {
+    expect(run(`<div><style>{'.a { color: red }'}</style>{children}</div>`).answer).toBe('Yes');
+  });
+
+  it('counts each piece once and caps the evidence at five', () => {
+    const r = run(`<div><b>One</b><b>Two</b><b>Three</b><b>Four</b><b>Five</b><b>Six</b><b>One</b></div>`);
+    expect(r.answer).toBe('No');
+    expect(r.evidence).toContain('6 piece(s)');
+    expect(r.evidence).not.toContain('"Six"');
+  });
+
+  it('answers N/A when the component renders no JSX', () => {
+    const r = check(facts(`export function useDialog() { return 1; } export function Dialog() { return null; }`, { componentName: 'Dialog' }));
+    expect(r.answer).toBe('N/A');
+  });
+});

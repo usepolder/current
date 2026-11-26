@@ -196,6 +196,18 @@ export const DEFAULT_METRICS: readonly MetricDef[] = [
     check: 'code.extensible',
   },
 
+  {
+    id: 'CO17',
+    category: 'code',
+    subcategory: 'Reusability',
+    guideline: 'Component does not hardcode copy: its text arrives as props, children or messages',
+    // A literal "Close" in the markup works for one product, in one language
+    // and one tone, and every other product forks the component to change
+    // it. Reads only what is rendered, so a prop default or a translation
+    // key is not copy (#42).
+    check: 'code.no-hardcoded-copy',
+  },
+
   // ---- Design (Figma) ----
   {
     id: 'DE1',

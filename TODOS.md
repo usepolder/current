@@ -9,11 +9,11 @@ Revisiting one is cheap. Each entry says what would have to change first.
 
 ## Validating the automated checks against something other than ourselves
 
-All 22 metrics are automated, and nothing independent has ever confirmed
+All 23 metrics are automated, and nothing independent has ever confirmed
 that any of them agrees with a human. The dogfood answers file covers the
 *manual* metrics, deliberately — so it cannot double as ground truth for the
 automated ones. The README now states the confidence per axis rather than
-implying the whole score is measured (code 7/7, design 8/8, docs 7/7).
+implying the whole score is measured (code 8/8, design 8/8, docs 7/7).
 
 #36 is what looking rather than validating turns up: DE1, DE4 and DE5 were
 scoring Figma's own component-set chrome as raw values, answering No on

@@ -55,6 +55,7 @@ export {
   ALL_CODE_CHECKS as CODE_CHECKS,
   STRUCTURE_CHECKS,
   checkExtensible,
+  checkNoHardcodedCopy,
 } from './structure-checks';
 export { lowestMajor, reactMajorFor, type ProjectFacts } from './project';
 export {

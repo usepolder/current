@@ -89,9 +89,9 @@ describe('parseConfig', () => {
   });
 
   it('drops disabled metrics and forces listed ones to manual', () => {
-    const config = parseConfig(polder(`${MINIMAL}\nmetrics:\n  disable: ["CO1"]\n  manual: ["CO2"]\n`));
-    expect(config.metrics.find((m) => m.id === 'CO1')).toBeUndefined();
-    expect(config.metrics.find((m) => m.id === 'CO2')?.check).toBeNull();
+    const config = parseConfig(polder(`${MINIMAL}\nmetrics:\n  disable: ["CO6"]\n  manual: ["CO7"]\n`));
+    expect(config.metrics.find((m) => m.id === 'CO6')).toBeUndefined();
+    expect(config.metrics.find((m) => m.id === 'CO7')?.check).toBeNull();
   });
 
   it('rejects an out-of-range threshold', () => {
@@ -285,7 +285,7 @@ describe('customising the norms', () => {
     expect(() => metrics(indent(body))).toThrow(message);
 
   it('refuses a custom id that collides with a built-in or another custom norm', () => {
-    rejects('custom:\n  - { id: CO1, category: code, guideline: g }', /already a metric id/);
+    rejects('custom:\n  - { id: CO6, category: code, guideline: g }', /already a metric id/);
     rejects(
       'custom:\n  - { id: A1, category: code, guideline: g }\n  - { id: A1, category: code, guideline: g }',
       /already a metric id/,
@@ -363,37 +363,45 @@ describe('customising the norms', () => {
     rejects('override:\n  DE7: { params: { min_bound: 90 } }', /takes no params/);
   });
 
-  // `driver` picks which screen reader answers CO4. Optional, and the default
-  // is the one that runs anywhere, so most adopters never set it.
-  it('accepts a screen-reader driver and normalises its case', () => {
-    expect(
-      metrics(indent('override:\n  CO4: { params: { driver: real } }')).find((m) => m.id === 'CO4')
-        ?.params,
-    ).toEqual({ driver: 'real' });
-    expect(
-      metrics(indent('override:\n  CO4: { params: { driver: REAL } }')).find((m) => m.id === 'CO4')
-        ?.params,
-    ).toEqual({ driver: 'real' });
-    expect(
-      metrics(indent('override:\n  CO4: { guideline: g }')).find((m) => m.id === 'CO4')?.params,
-    ).toBeUndefined();
+  // The accessibility checks left the default rubric in #39 but stay
+  // registered, so a team that wants them adds a custom norm. `driver` picks
+  // which screen reader answers one; the default runs anywhere.
+  const reader = (params: string) =>
+    `custom:\n  - { id: A11Y1, category: code, guideline: g, check: code.screenreader${params} }`;
+
+  it('accepts a screen-reader driver on a custom norm and normalises its case', () => {
+    const find = (body: string) => metrics(indent(body)).find((m) => m.id === 'A11Y1');
+    expect(find(reader(', params: { driver: real }'))?.params).toEqual({ driver: 'real' });
+    expect(find(reader(', params: { driver: REAL }'))?.params).toEqual({ driver: 'real' });
+    expect(find(reader(''))?.params).toBeUndefined();
   });
 
   // Naming a specific reader would be unanswerable on every other platform,
   // and which reader to use is the machine's business rather than the rubric's.
   it('refuses a driver that names a reader instead of a kind', () => {
-    const bad = (v: string) => rejects(`override:\n  CO4: { params: { driver: ${v} } }`, /driver/);
+    const bad = (v: string) => rejects(reader(`, params: { driver: ${v} }`), /driver/);
     bad('nvda');
     bad('voiceover');
     bad('orca');
     bad('"true"');
     bad('7');
-    rejects('override:\n  CO4: { params: { driver: real, widths: [320] } }', /driver/);
+    rejects(reader(', params: { driver: real, widths: [320] }'), /driver/);
   });
 
   it('refuses a driver on a check that does not pick a reader', () => {
-    rejects('override:\n  CO3: { params: { driver: real } }', /takes no params/);
+    rejects('override:\n  CO8: { params: { driver: real } }', /takes no params/);
   });
+
+  // Ids are never reused, so the gap in the sequence stays a record of what
+  // was dropped. Without this, retiring CO4 would have freed the id for a
+  // custom norm meaning something else entirely, and an old answers file
+  // would silently answer it.
+  it.each(['CO1', 'CO4', 'CO11', 'CO13', 'DE2', 'DE8', 'DE11', 'DO1', 'DO9'])(
+    'refuses %s as a custom id, because it is retired',
+    (id) => {
+      rejects(`custom:\n  - { id: ${id}, category: code, guideline: g }`, /retired/);
+    },
+  );
 
   it('refuses to override an unknown id, pointing at custom instead', () => {
     rejects('override:\n  ZZ9: { guideline: g }', /not a built-in metric.*metrics\.custom/);
@@ -414,14 +422,16 @@ describe('metricKeys', () => {
     expect(keys).toHaveLength(DEFAULT_METRICS.length);
     // Every key names its metric and encodes its category + check + params.
     expect(keys.every((k) => k.includes(':'))).toBe(true);
-    expect(keys.find((k) => k.startsWith('CO3:'))).toContain('code.keyboard');
-    expect(keys.find((k) => k.startsWith('CO1:'))).toContain('code.states');
-    expect(keys.find((k) => k.startsWith('CO4:'))).toContain('code.screenreader');
+    expect(keys.find((k) => k.startsWith('CO6:'))).toContain('code.breakpoints');
     expect(keys.find((k) => k.startsWith('CO10:'))).toContain('code.text-expansion');
-    // A norm only a human can answer carries a null check, and says so. DE2
-    // is the last one of those in the default set, which is why it is the
-    // example: CO10 used to be, until a pseudo-localized probe answered it.
-    expect(keys.find((k) => k.startsWith('DE2:'))).toContain('"design",null');
+    // A norm only a human can answer carries a null check, and says so. No
+    // default norm is one any more — DE2 was the last, retired in #39 — so a
+    // manual flip is the example.
+    const flipped = metricKeys(
+      parseConfig(polder(`${MINIMAL}\nmetrics:\n  manual: [CO8]\n`)).metrics,
+    );
+    expect(flipped.find((k) => k.startsWith('CO8:'))).toContain('"code",null');
+    expect(DEFAULT_METRICS.every((m) => m.check !== null)).toBe(true);
   });
 
   /**
@@ -484,17 +494,17 @@ describe('metricKeys', () => {
   });
 
   it('marks a built-in flipped to manual, since its score now means something else', () => {
-    const cfg = parseConfig(polder(`${MINIMAL}\nmetrics:\n  manual: [CO2]\n`));
+    const cfg = parseConfig(polder(`${MINIMAL}\nmetrics:\n  manual: [CO7]\n`));
     const defaults = metricKeys(DEFAULT_METRICS);
-    expect(metricKeys(cfg.metrics).find((k) => k.startsWith('CO2:'))).not.toBe(
-      defaults.find((k) => k.startsWith('CO2:')),
+    expect(metricKeys(cfg.metrics).find((k) => k.startsWith('CO7:'))).not.toBe(
+      defaults.find((k) => k.startsWith('CO7:')),
     );
   });
 
   it('does not change when a norm is disabled — its key simply leaves the set', () => {
-    const cfg = parseConfig(polder(`${MINIMAL}\nmetrics:\n  disable: [CO3]\n`));
+    const cfg = parseConfig(polder(`${MINIMAL}\nmetrics:\n  disable: [CO6]\n`));
     const keys = metricKeys(cfg.metrics);
-    expect(keys.some((k) => k.startsWith('CO3:'))).toBe(false);
+    expect(keys.some((k) => k.startsWith('CO6:'))).toBe(false);
     expect(metricsHash(keys)).not.toBe(metricsHash(metricKeys(DEFAULT_METRICS)));
   });
 });

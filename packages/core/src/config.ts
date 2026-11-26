@@ -19,7 +19,13 @@ import {
   MIN_BOUND_KEY,
   STATES_KEY,
 } from './figma-checks';
-import { CATEGORIES, DEFAULT_METRICS, type MetricCategory, type MetricDef } from './metrics';
+import {
+  CATEGORIES,
+  DEFAULT_METRICS,
+  RETIRED_METRIC_IDS,
+  type MetricCategory,
+  type MetricDef,
+} from './metrics';
 
 /** Bump when a change to the `current:` block would break configs in the wild. */
 export const CURRENT_SCHEMA_VERSION = 1;
@@ -464,6 +470,13 @@ function parseCustom(raw: unknown, taken: Set<string>): MetricDef[] {
       throw new ConfigValidationError(
         `${where}.id: "${id}" is already a metric id. ` +
           'Pick another, or change the built-in one under `metrics.override`.',
+      );
+    }
+    if (RETIRED_METRIC_IDS.includes(id)) {
+      throw new ConfigValidationError(
+        `${where}.id: "${id}" is a retired metric id, and retired ids are never reused — ` +
+          'an answers file written for the old norm would silently answer the new one. ' +
+          'Pick another id.',
       );
     }
     taken.add(id);

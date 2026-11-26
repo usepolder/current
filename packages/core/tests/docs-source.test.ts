@@ -66,7 +66,6 @@ describe('hosted documentation', () => {
     expect(answers.DO2).toBe('Yes'); // Usage
     expect(answers.DO4).toBe('Yes'); // Anatomy
     expect(answers.DO8).toBe('Yes'); // States
-    expect(answers.DO9).toBe('Yes'); // Accessibility
     expect(answers.DO5).toBe('No'); // no Animation section
   });
 

@@ -1,11 +1,3 @@
 Button:
-  CO1: Yes
-  CO3: Yes
-  CO4: Yes
   CO6: Yes
   CO10: Yes
-  DE2: Yes
-Wrapper:
-  CO1: No
-  CO3: No
-  DE2: No

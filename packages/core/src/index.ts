@@ -9,6 +9,7 @@ export {
 export {
   DEFAULT_METRICS,
   DEFAULT_METRICS_BY_ID,
+  RETIRED_METRIC_IDS,
   CATEGORIES,
   metricKeys,
   type Answer,
